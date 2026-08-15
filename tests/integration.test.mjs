@@ -37,6 +37,7 @@ before(async () => {
     base_url: `http://127.0.0.1:${mockPort}/fail/v1`,
     default_model: "mock-model",
     failure_threshold: 3,
+    cooldown_ms: 500,
   });
   const secondary = await post("/api/providers", {
     name: "Secondary success",
@@ -253,8 +254,11 @@ test("marks timed out benchmark samples as failed and continues", async () => {
   }
 });
 
-test("opens the primary circuit after three consecutive retryable failures", async () => {
-  for (let index = 0; index < 2; index += 1) {
+test("waits for an open circuit and uses the next request as its half-open probe", async () => {
+  const configuredProviders = await get("/api/providers");
+  const configuredPrimary = configuredProviders.find((provider) => provider.name === "Primary failure");
+  await post(`/api/providers/${configuredPrimary.id}/reset-circuit`, {});
+  for (let index = 0; index < 3; index += 1) {
     const response = await fetch(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -275,18 +279,99 @@ test("opens the primary circuit after three consecutive retryable failures", asy
     max_attempts: 1,
     members: [{ provider_id: primary.id, priority: 1, weight: 100, enabled: true }],
   });
-  const blocked = await fetch(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
+  const probeStartedAt = Date.now();
+  const probe = await fetch(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ model: "default", input: "blocked", stream: true }),
   });
-  const blockedBody = await blocked.json();
-  assert.equal(blocked.status, 503);
-  assert.ok(Number(blocked.headers.get("retry-after")) >= 1);
-  const blockedDetail = await get(`/api/requests/${blockedBody.error.request_id}`);
-  assert.equal(blockedDetail.error_category, "circuit_open");
-  assert.equal(blockedDetail.attempt_count, 0);
-  assert.equal(blockedDetail.cost_status, "not_applicable");
+  const probeBody = await probe.json();
+  assert.equal(probe.status, 500);
+  assert.ok(Date.now() - probeStartedAt >= 200);
+  const probeDetail = await get(`/api/requests/${probeBody.error.request_id}`);
+  assert.equal(probeDetail.error_category, "upstream_5xx");
+  assert.equal(probeDetail.attempt_count, 1);
+  assert.equal(probeDetail.attempts[0].provider_name, "Primary failure");
+  assert.equal(probeDetail.cost_status, "unknown");
+});
+
+test("probes the circuit with the earliest recovery time before later channels", async () => {
+  const early = await post("/api/providers", {
+    name: "Early recovery",
+    base_url: `http://127.0.0.1:${mockPort}/recover-early/v1`,
+    failure_threshold: 1,
+    cooldown_ms: 220,
+  });
+  const late = await post("/api/providers", {
+    name: "Late recovery",
+    base_url: `http://127.0.0.1:${mockPort}/recover-late/v1`,
+    failure_threshold: 1,
+    cooldown_ms: 1000,
+  });
+  const routes = await get("/api/routes");
+  const group = routes.groups[0];
+  const originalMembers = group.members;
+
+  try {
+    await put(`/api/route-groups/${group.id}`, {
+      ...group,
+      max_attempts: 1,
+      members: [{ provider_id: early.id, priority: 2, weight: 100, enabled: true }],
+    });
+    const earlyFailure = await fetch(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "default", input: "trip early", stream: false }),
+    });
+    assert.equal(earlyFailure.status, 500);
+
+    await put(`/api/route-groups/${group.id}`, {
+      ...group,
+      max_attempts: 1,
+      members: [{ provider_id: late.id, priority: 1, weight: 100, enabled: true }],
+    });
+    const lateFailure = await fetch(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "default", input: "trip late", stream: false }),
+    });
+    assert.equal(lateFailure.status, 500);
+
+    await put(`/api/route-groups/${group.id}`, {
+      ...group,
+      max_attempts: 2,
+      members: [
+        { provider_id: late.id, priority: 1, weight: 100, enabled: true },
+        { provider_id: early.id, priority: 2, weight: 100, enabled: true },
+      ],
+    });
+    const recoverRequest = (input) => fetch(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "default", input, stream: true }),
+    });
+    const recoveredResponses = await Promise.all([
+      recoverRequest("recover first"),
+      recoverRequest("recover second"),
+    ]);
+    for (const recovered of recoveredResponses) {
+      assert.equal(recovered.status, 200);
+      assert.match(await recovered.text(), /response\.completed/);
+    }
+
+    const records = (await get("/api/requests?limit=10")).slice(0, 2);
+    const details = await Promise.all(records.map((record) => get(`/api/requests/${record.id}`)));
+    assert.ok(details.every((detail) => detail.status === "completed"));
+    assert.ok(details.every((detail) => detail.attempt_count === 1));
+    assert.ok(details.every((detail) => detail.attempts[0].provider_name === "Early recovery"));
+    const updatedProviders = await get("/api/providers");
+    assert.equal(updatedProviders.find((provider) => provider.id === early.id).circuit_state, "closed");
+    assert.equal(updatedProviders.find((provider) => provider.id === late.id).circuit_state, "open");
+  } finally {
+    await put(`/api/route-groups/${group.id}`, { ...group, members: originalMembers });
+    await send("DELETE", `/api/providers/${early.id}`, {});
+    await send("DELETE", `/api/providers/${late.id}`, {});
+  }
 });
 
 test("retries capacity failures on the same provider before failing over", async () => {

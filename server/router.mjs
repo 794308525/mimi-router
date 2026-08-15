@@ -96,6 +96,7 @@ export class RouterEngine {
     this.controllers = new Map();
     this.attemptObservations = new Map();
     this.firstTokenTimeoutCache = new Map();
+    this.circuitWaiters = new Map();
   }
 
   async handle(req, res, { upstreamEndpoint = "responses" } = {}) {
@@ -182,6 +183,35 @@ export class RouterEngine {
         if (retryProvider && this.providerAvailable(retryProvider)) {
           selection = this.claimSelection(retryProvider);
         }
+      }
+      if (!selection) {
+        const recovery = this.selectCircuitRecovery(route, attempted);
+        if (recovery?.waitProviderId) {
+          const ready = await this.waitForCircuitChange(
+            recovery.waitProviderId,
+            recovery.waitMs ?? null,
+            clientController.signal,
+          );
+          if (!ready) {
+            const reason = clientTerminationReason(clientController) || "client_disconnected";
+            const message = terminationMessage(reason);
+            this.finishRequest(requestId, startedMono, {
+              status: requestStatusForTermination(reason),
+              http_status: 499,
+              error_category: reason,
+              error_message: message,
+              termination_reason: reason,
+              stream_phase: "routing",
+              cost_status: attempted.size === 0 ? "not_applicable" : this.requestCostStatus(requestId),
+            });
+            if (!res.headersSent) sendJson(res, 499, errorBody(message, requestId));
+            this.controllers.delete(requestId);
+            return;
+          }
+          sequence -= 1;
+          continue;
+        }
+        selection = recovery?.selection ?? null;
       }
       selection ??= this.selectProvider(route, body, attempted);
       if (!selection) {
@@ -1167,6 +1197,48 @@ export class RouterEngine {
     return this.claimSelection(selected.provider);
   }
 
+  selectCircuitRecovery(route, attempted) {
+    const candidates = route.group.members
+      .filter((member) => member.enabled && member.provider_enabled && !attempted.has(member.provider_id))
+      .map((member) => ({ member, provider: getProvider(this.db, member.provider_id) }))
+      .filter(({ provider }) => provider?.enabled && provider.health_status !== "auth_error");
+    if (candidates.length === 0) return null;
+    if (candidates.some(({ provider }) => !["open", "half_open"].includes(provider.circuit_state))) return null;
+
+    const now = Date.now();
+    const ordered = candidates
+      .map((candidate) => ({
+        ...candidate,
+        availableAt: candidate.provider.circuit_state === "half_open"
+          ? 0
+          : new Date(candidate.provider.circuit_open_until || "").getTime(),
+      }))
+      .filter((candidate) => Number.isFinite(candidate.availableAt))
+      .sort((left, right) => left.availableAt - right.availableAt
+        || left.member.priority - right.member.priority
+        || left.provider.name.localeCompare(right.provider.name, "zh-CN"));
+    const earliest = ordered[0];
+    if (!earliest) return null;
+    if (earliest.availableAt > now) {
+      return { waitProviderId: earliest.provider.id, waitMs: earliest.availableAt - now };
+    }
+
+    if (earliest.provider.circuit_state === "open") {
+      const timestamp = new Date().toISOString();
+      this.db.prepare("UPDATE providers SET circuit_state = 'half_open', updated_at = ? WHERE id = ?")
+        .run(timestamp, earliest.provider.id);
+      this.publish("circuit.state_changed", { provider_id: earliest.provider.id, state: "half_open" });
+      earliest.provider.circuit_state = "half_open";
+    }
+    if (this.halfOpenProbes.has(earliest.provider.id)) {
+      return { waitProviderId: earliest.provider.id };
+    }
+    if ((this.inFlight.get(earliest.provider.id) ?? 0) >= earliest.provider.max_concurrency) {
+      return { waitProviderId: earliest.provider.id, waitMs: 100 };
+    }
+    return { selection: this.claimSelection(earliest.provider) };
+  }
+
   routeUnavailable(route, attempted) {
     const members = route.group.members
       .filter((member) => member.enabled && member.provider_enabled && !attempted.has(member.provider_id));
@@ -1261,9 +1333,45 @@ export class RouterEngine {
     this.inFlight.set(providerId, (this.inFlight.get(providerId) ?? 0) + 1);
   }
 
+  waitForCircuitChange(providerId, delayMs, signal) {
+    if (signal.aborted) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      const waiters = this.circuitWaiters.get(providerId) ?? new Set();
+      let timer = null;
+      const finish = (ready) => {
+        if (timer) clearTimeout(timer);
+        signal.removeEventListener("abort", onAbort);
+        waiters.delete(onCircuitChange);
+        if (waiters.size === 0) this.circuitWaiters.delete(providerId);
+        resolve(ready);
+      };
+      const onAbort = () => finish(false);
+      const onCircuitChange = () => finish(true);
+      waiters.add(onCircuitChange);
+      this.circuitWaiters.set(providerId, waiters);
+      signal.addEventListener("abort", onAbort, { once: true });
+      if (delayMs != null) {
+        timer = setTimeout(
+          onCircuitChange,
+          Math.max(1, Math.min(delayMs, 2_147_483_647)),
+        );
+      }
+    });
+  }
+
+  notifyCircuitChange(providerId) {
+    const waiters = this.circuitWaiters.get(providerId);
+    if (!waiters) return;
+    this.circuitWaiters.delete(providerId);
+    for (const notify of [...waiters]) notify();
+  }
+
   releaseProvider(providerId, probe) {
     this.inFlight.set(providerId, Math.max(0, (this.inFlight.get(providerId) ?? 1) - 1));
-    if (probe) this.halfOpenProbes.delete(providerId);
+    if (probe) {
+      this.halfOpenProbes.delete(providerId);
+      queueMicrotask(() => this.notifyCircuitChange(providerId));
+    }
   }
 
   recordSuccess(provider) {
@@ -1274,6 +1382,7 @@ export class RouterEngine {
         consecutive_slow_first_tokens = 0,
         last_success_at = ?, last_error = NULL, updated_at = ? WHERE id = ?
     `).run(timestamp, timestamp, provider.id);
+    this.notifyCircuitChange(provider.id);
     this.publish("provider.health_changed", { provider: getProvider(this.db, provider.id) });
   }
 
@@ -1321,6 +1430,7 @@ export class RouterEngine {
       timestamp,
       provider.id,
     );
+    this.notifyCircuitChange(provider.id);
     this.publish("provider.health_changed", { provider: getProvider(this.db, provider.id) });
     if (shouldOpen) {
       this.publish("circuit.state_changed", {
@@ -1340,6 +1450,7 @@ export class RouterEngine {
         last_error = NULL, updated_at = ? WHERE id = ?
     `).run(timestamp, providerId);
     this.halfOpenProbes.delete(providerId);
+    this.notifyCircuitChange(providerId);
     this.publish("circuit.state_changed", { provider_id: providerId, state: "closed" });
     return getProvider(this.db, providerId);
   }

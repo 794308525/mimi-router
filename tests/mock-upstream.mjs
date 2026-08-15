@@ -2,6 +2,8 @@ import { createServer } from "node:http";
 
 const port = Number(process.env.MOCK_PORT || 19091);
 let sameRaceCalls = 0;
+let recoverEarlyCalls = 0;
+let recoverLateCalls = 0;
 
 const server = createServer((req, res) => {
   const compact = req.url?.endsWith("/responses/compact");
@@ -114,6 +116,16 @@ const server = createServer((req, res) => {
           usage: { input_tokens: 14, output_tokens: 0, input_tokens_details: { cached_tokens: 0 } },
         },
       })}\n\n`);
+      return;
+    }
+    if (req.url?.includes("/recover-early/") && recoverEarlyCalls++ === 0) {
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "early recovery initial failure" } }));
+      return;
+    }
+    if (req.url?.includes("/recover-late/") && recoverLateCalls++ === 0) {
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "late recovery initial failure" } }));
       return;
     }
     if (req.url?.includes("/fail/")) {
