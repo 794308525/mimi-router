@@ -419,6 +419,59 @@ test("races a second request on the same channel without marking failover", asyn
   assert.equal(detail.attempts.filter((attempt) => attempt.error_category === "race_lost").length, 1);
 });
 
+test("keeps response.completed successful when the client closes before upstream EOF", async () => {
+  const terminal = await post("/api/providers", {
+    name: "Terminal event before EOF",
+    base_url: `http://127.0.0.1:${mockPort}/terminal-open/v1`,
+    default_model: "gpt-5.6-sol",
+  });
+  const routes = await get("/api/routes");
+  const group = routes.groups[0];
+  const originalMembers = group.members;
+  await put(`/api/route-groups/${group.id}`, {
+    ...group,
+    max_attempts: 1,
+    members: [{ provider_id: terminal.id, priority: 1, weight: 100, enabled: true }],
+  });
+
+  try {
+    for (const mode of ["retry_then_switch", "race_same"]) {
+      await put("/api/router-settings", {
+        first_token_timeout_policy: "fixed",
+        first_token_timeout_ms: 2000,
+        first_token_timeout_mode: mode,
+      });
+      const response = await fetch(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "gpt-5.6-sol", input: mode, stream: true }),
+      });
+      const requestId = response.headers.get("x-codex-router-request-id");
+      assert.ok(requestId);
+      const reader = response.body.getReader();
+      let received = "";
+      while (!received.includes("response.completed")) {
+        const result = await reader.read();
+        if (result.done) break;
+        received += Buffer.from(result.value).toString("utf8");
+      }
+      assert.match(received, /response\.completed/);
+      await reader.cancel();
+
+      const detail = await waitForRequest(requestId, (request) => request.status === "completed");
+      assert.equal(detail.termination_reason, null);
+      assert.equal(detail.cost_status, "confirmed");
+      assert.equal(detail.input_tokens, 24);
+      assert.equal(detail.output_tokens, 2);
+      assert.equal(detail.attempts[0].status, "completed");
+      assert.equal(detail.attempts[0].last_stream_event, "response.completed");
+    }
+  } finally {
+    await put(`/api/route-groups/${group.id}`, { ...group, members: originalMembers });
+    await send("DELETE", `/api/providers/${terminal.id}`, {});
+  }
+});
+
 test("records a downstream disconnect separately without marking the provider failed", async () => {
   const providers = await get("/api/providers");
   const fast = providers.find((provider) => provider.name === "Fast fallback");

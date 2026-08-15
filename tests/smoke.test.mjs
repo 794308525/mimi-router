@@ -80,16 +80,69 @@ test("compacts detailed diagnostics after three days without deleting request su
 test("runs compatibility data migrations only once", () => {
   const migrationDirectory = mkdtempSync(join(tmpdir(), "codex-router-migration-test-"));
   const first = createDatabase(migrationDirectory);
-  assert.equal(first.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 5);
+  assert.equal(first.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 6);
+  const provider = saveProvider(first, {
+    name: "Migration upstream",
+    base_url: "http://127.0.0.1:19996/v1",
+  });
   first.prepare(`
+    INSERT INTO requests (
+      id, started_at, ended_at, status, requested_model, error_category,
+      error_message, termination_reason, stream_phase, cost_status
+    ) VALUES (
+      'completed-disconnect', ?, ?, 'client_disconnected', '', 'client_disconnected',
+      '客户端连接已断开', 'client_disconnected', 'completed', 'confirmed'
+    )
+  `).run(new Date().toISOString(), new Date().toISOString());
+  first.prepare(`
+    INSERT INTO request_attempts (
+      id, request_id, sequence, provider_id, started_at, ended_at, status,
+      http_status, error_category, error_message, termination_reason,
+      stream_phase, last_stream_event, cost_status
+    ) VALUES (
+      'completed-disconnect-attempt', 'completed-disconnect', 1, ?, ?, ?, 'cancelled',
+      200, 'client_disconnected', '客户端连接已断开', 'client_disconnected',
+      'completed', 'response.completed', 'confirmed'
+    )
+  `).run(provider.id, new Date().toISOString(), new Date().toISOString());
+  first.prepare(`
+    UPDATE providers
+       SET health_status = 'unhealthy', circuit_state = 'open',
+           circuit_open_until = ?, consecutive_failures = 3,
+           last_error_at = ?, last_error = 'network'
+     WHERE id = ?
+  `).run(
+    new Date(Date.now() + 60000).toISOString(),
+    new Date(Date.now() - 60000).toISOString(),
+    provider.id,
+  );
+  first.prepare("DELETE FROM schema_migrations WHERE id = '2026-08-completed-client-disconnect'").run();
+  first.close();
+
+  const migrated = createDatabase(migrationDirectory);
+  const repairedRequest = migrated.prepare("SELECT * FROM requests WHERE id = 'completed-disconnect'").get();
+  const repairedAttempt = migrated.prepare("SELECT * FROM request_attempts WHERE id = 'completed-disconnect-attempt'").get();
+  const repairedProvider = migrated.prepare("SELECT * FROM providers WHERE id = ?").get(provider.id);
+  assert.equal(repairedRequest.status, "completed");
+  assert.equal(repairedRequest.termination_reason, null);
+  assert.equal(repairedRequest.last_stream_event, "response.completed");
+  assert.equal(repairedAttempt.status, "completed");
+  assert.equal(repairedAttempt.termination_reason, null);
+  assert.equal(repairedProvider.health_status, "healthy");
+  assert.equal(repairedProvider.circuit_state, "closed");
+  assert.equal(repairedProvider.circuit_open_until, null);
+  assert.equal(repairedProvider.consecutive_failures, 0);
+  assert.equal(repairedProvider.last_error, null);
+  assert.ok(repairedProvider.last_success_at);
+  migrated.prepare(`
     INSERT INTO requests (id, started_at, ended_at, status, requested_model, error_message)
     VALUES ('post-migration', ?, ?, 'cancelled', '', '客户端连接已断开')
   `).run(new Date().toISOString(), new Date().toISOString());
-  first.close();
+  migrated.close();
 
   const reopened = createDatabase(migrationDirectory);
   assert.equal(reopened.prepare("SELECT status FROM requests WHERE id = 'post-migration'").get().status, "cancelled");
-  assert.equal(reopened.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 5);
+  assert.equal(reopened.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 6);
   reopened.close();
   rmSync(migrationDirectory, { recursive: true, force: true });
 });

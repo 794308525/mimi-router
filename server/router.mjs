@@ -373,6 +373,22 @@ export class RouterEngine {
         this.controllers.delete(requestId);
         return;
       } catch (error) {
+        clearTimeout(requestTimer);
+        if (this.completeObservedSuccess({
+          requestId,
+          requestStartedMono: startedMono,
+          attemptId,
+          attemptMono,
+          provider,
+          upstreamModel,
+          probe,
+          upstream,
+          res,
+          stickyTtlSeconds: route.group.sticky_enabled ? route.group.sticky_ttl_seconds : 0,
+        })) {
+          this.controllers.delete(requestId);
+          return;
+        }
         if (error?.attemptHandled) {
           const terminationReason = clientTerminationReason(clientController);
           if (terminationReason) {
@@ -391,7 +407,6 @@ export class RouterEngine {
           if (!route.group.failover_enabled) break;
           continue;
         }
-        clearTimeout(requestTimer);
         this.releaseProvider(provider.id, probe);
         if (error instanceof UpstreamSemanticFailureError && !clientTerminationReason(clientController)) {
           const retries = providerRetryCounts.get(provider.id) ?? 0;
@@ -715,6 +730,20 @@ export class RouterEngine {
       res.end();
     } catch (error) {
       clearTimeout(requestTimer);
+      if (this.completeObservedSuccess({
+        requestId,
+        requestStartedMono,
+        attemptId,
+        attemptMono,
+        provider,
+        upstreamModel,
+        probe,
+        upstream,
+        res,
+        stickyTtlSeconds,
+        usage: candidate.usage,
+        responseId: candidate.responseId,
+      })) return;
       this.releaseProvider(provider.id, probe);
       const terminationReason = clientTerminationReason(clientController);
       const category = terminationReason || "stream_interrupted";
@@ -968,6 +997,18 @@ export class RouterEngine {
       upstream_response_id: responseId || undefined,
       cost_status: this.requestCostStatus(requestId),
     });
+  }
+
+  completeObservedSuccess(context) {
+    const attempt = this.getAttempt(context.attemptId);
+    if (attempt?.last_stream_event !== "response.completed") return false;
+    if (!context.res.writableEnded && !context.res.destroyed) context.res.end();
+    this.completeSuccess({
+      ...context,
+      usage: context.usage ?? null,
+      responseId: context.responseId || attempt.upstream_response_id || "",
+    });
+    return true;
   }
 
   resolveRoute(model) {

@@ -317,6 +317,79 @@ export function createDatabase(dataDir) {
            updated_at = ?
      WHERE id = 1
   `).run(now()));
+  runOnce(db, "2026-08-completed-client-disconnect", () => db.exec(`
+    CREATE TEMP TABLE repaired_client_completions AS
+      SELECT r.id AS request_id,
+             a.provider_id AS provider_id,
+             COALESCE(a.ended_at, r.ended_at, r.started_at) AS success_at
+        FROM requests r
+        JOIN request_attempts a ON a.id = (
+          SELECT candidate.id
+            FROM request_attempts candidate
+           WHERE candidate.request_id = r.id
+             AND candidate.last_stream_event = 'response.completed'
+             AND candidate.termination_reason = 'client_disconnected'
+           ORDER BY candidate.sequence DESC
+           LIMIT 1
+        )
+       WHERE r.status = 'client_disconnected';
+    UPDATE requests
+       SET status = 'completed',
+           error_category = NULL,
+           error_message = NULL,
+           termination_reason = NULL,
+           stream_phase = 'completed',
+           last_stream_event = 'response.completed'
+     WHERE id IN (SELECT request_id FROM repaired_client_completions);
+    UPDATE providers
+       SET last_success_at = CASE
+             WHEN last_success_at IS NULL OR last_success_at < (
+               SELECT MAX(success_at) FROM repaired_client_completions repaired
+                WHERE repaired.provider_id = providers.id
+             )
+             THEN (
+               SELECT MAX(success_at) FROM repaired_client_completions repaired
+                WHERE repaired.provider_id = providers.id
+             )
+             ELSE last_success_at
+           END,
+           health_status = CASE
+             WHEN COALESCE(last_error_at, '') <= (
+               SELECT MAX(success_at) FROM repaired_client_completions repaired
+                WHERE repaired.provider_id = providers.id
+             ) THEN 'healthy' ELSE health_status END,
+           circuit_state = CASE
+             WHEN COALESCE(last_error_at, '') <= (
+               SELECT MAX(success_at) FROM repaired_client_completions repaired
+                WHERE repaired.provider_id = providers.id
+             ) THEN 'closed' ELSE circuit_state END,
+           circuit_open_until = CASE
+             WHEN COALESCE(last_error_at, '') <= (
+               SELECT MAX(success_at) FROM repaired_client_completions repaired
+                WHERE repaired.provider_id = providers.id
+             ) THEN NULL ELSE circuit_open_until END,
+           consecutive_failures = CASE
+             WHEN COALESCE(last_error_at, '') <= (
+               SELECT MAX(success_at) FROM repaired_client_completions repaired
+                WHERE repaired.provider_id = providers.id
+             ) THEN 0 ELSE consecutive_failures END,
+           last_error = CASE
+             WHEN COALESCE(last_error_at, '') <= (
+               SELECT MAX(success_at) FROM repaired_client_completions repaired
+                WHERE repaired.provider_id = providers.id
+             ) THEN NULL ELSE last_error END
+     WHERE id IN (SELECT provider_id FROM repaired_client_completions);
+    UPDATE request_attempts
+       SET status = 'completed',
+           error_category = NULL,
+           error_message = NULL,
+           termination_reason = NULL,
+           stream_phase = 'completed'
+     WHERE last_stream_event = 'response.completed'
+       AND termination_reason = 'client_disconnected'
+       AND request_id IN (SELECT request_id FROM repaired_client_completions);
+    DROP TABLE repaired_client_completions;
+  `));
   pruneExpiredDiagnostics(db);
   pruneExpiredRequests(db);
   return db;

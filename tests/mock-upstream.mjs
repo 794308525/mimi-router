@@ -60,6 +60,24 @@ const server = createServer((req, res) => {
       setTimeout(() => res.end(), 1000);
       return;
     }
+    if (req.url?.includes("/terminal-open/") && body.stream) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(`event: response.created\ndata: ${JSON.stringify({ type: "response.created", response: { id: "resp_terminal_open" } })}\n\n`);
+      res.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "OK" })}\n\n`);
+      res.write(`event: response.completed\ndata: ${JSON.stringify({
+        type: "response.completed",
+        response: {
+          id: "resp_terminal_open",
+          usage: {
+            input_tokens: 24,
+            output_tokens: 2,
+            input_tokens_details: { cached_tokens: 4 },
+          },
+        },
+      })}\n\n`);
+      setTimeout(() => res.end(), 1000);
+      return;
+    }
     const sameRaceCall = req.url?.includes("/same-race/") ? ++sameRaceCalls : 0;
     const headerDelay = req.url?.includes("/fast/") || sameRaceCall ? 10 : 220;
     const firstOutputDelay = sameRaceCall
