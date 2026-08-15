@@ -1,6 +1,7 @@
 {
   "name": "codex-relay-router",
   "version": "0.1.0",
+  "description": "本地优先的 Responses API 智能路由网关与桌面管理工具",
   "private": true,
   "type": "module",
   "scripts": {

@@ -1,50 +1,58 @@
-# Codex Relay Router
+# 咪咪 Router
 
-Codex Relay Router 是一个独立的本地 Responses API 路由网关和管理界面。它与 CC Switch 分开运行：
-
-- CC Switch 默认端口：`15721`
-- Codex Relay Router 默认端口：`18080`
-- 开发界面：`http://127.0.0.1:5176`
-
-## 桌面开发版
-
-```bash
-npm install
-npm run desktop:dev
-```
-
-该命令会启动 Tauri 桌面窗口，并自动拉起本地网关和 Vite 开发服务。
-
-如只需要浏览器调试界面，可以运行：
-
-```bash
-npm run dev
-```
-
-桌面开发版运行后：
-
-- 打开 `http://127.0.0.1:5176`
-- 在“中转管理”中添加至少一个兼容 `/v1/responses` 的服务
-- 在“路由规则”中确认中转已加入默认路由组
-- 在“设置”中显式接管 Codex 配置
-
-
-## 数据与密钥
-
-- SQLite 数据库保存在 `data/router.sqlite`
-- macOS 上的 API Key 保存到系统钥匙串
-- 请求正文、提示词、代码和完整响应默认不保存
-- `data/` 已加入 `.gitignore`
+咪咪 Router 是一个本地优先的 Responses API 智能路由网关与桌面管理工具。它保留客户端传入的模型和请求参数，在多个兼容中转之间完成路由、重试、故障转移和运行分析。
 
 ## 主要能力
 
-- Responses API JSON 与 SSE 透传
-- 默认模型 `gpt-5.6-sol`
-- 中转检测固定使用 SSE 流式请求，默认测试模型 `gpt-5.6-terra`
-- 路由规则优先级
-- 组内中转优先级和同级权重
-- 自动故障转移
-- Closed / Open / Half-Open 熔断状态机
-- 请求发起后立即显示和实时计时
-- 每次上游尝试、Token、耗时和错误记录
-- 使用统计和 Codex 配置接管
+- 兼容 `/v1/responses`、`/v1/responses/compact` 和 `/v1/models`
+- 支持 JSON 与 SSE 流式透传，不改写客户端指定的模型
+- 多个中转的启停管理、拖拽排序、健康检测和性能测评
+- 自动重试、故障转移与熔断恢复
+- 指定时限和自动均衡的首字超时判断
+- 稳妥、直切、同渠竞速和分渠竞速模式
+- 记录连接、响应头、首字、生成与总耗时
+- 统计 Token、消耗金额、成功率与中转表现
+- 支持本机和局域网访问
+- 支持 Codex 配置接管与恢复
+
+## 快速开始
+
+环境要求：Node.js 22、Rust 1.85 或更高版本。
+
+```bash
+npm install
+npm run dev
+```
+
+启动后打开 `http://127.0.0.1:5176`，网关默认监听 `http://127.0.0.1:18080/v1`。
+
+桌面开发模式：
+
+```bash
+npm run desktop:dev
+```
+
+构建当前平台的桌面安装包：
+
+```bash
+npm run desktop:build
+```
+
+## 接入地址
+
+- 本机：`http://127.0.0.1:18080/v1`
+- 局域网：`http://<本机局域网 IP>:18080/v1`
+
+请先在“中转管理”中添加至少一个兼容 Responses API 的上游地址。
+
+## 数据与隐私
+
+- SQLite 数据库保存在本地应用数据目录
+- macOS 上的上游密钥保存到系统钥匙串
+- 其他平台的密钥保存到本地受限文件
+- 不保存提示词、代码和完整响应内容
+- 运行数据、密钥、依赖和构建产物均已排除在 Git 版本库之外
+
+## 开源许可
+
+本项目使用 [MIT License](LICENSE)。

@@ -448,7 +448,7 @@ requestCleanupTimer.unref();
 
 server.on("error", (error) => {
   if (error.code === "EADDRINUSE") {
-    console.error(`[gateway] 端口 ${port} 已被占用。CC Switch 默认使用 15721，本项目默认使用 18080。`);
+    console.error(`[gateway] 端口 ${port} 已被占用，请关闭占用该端口的程序或修改 CODEX_ROUTER_PORT。`);
   } else {
     console.error("[gateway] 启动失败", error);
   }
