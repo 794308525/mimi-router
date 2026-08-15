@@ -29,6 +29,23 @@ const server = createServer((req, res) => {
       })}\n\n`);
       return;
     }
+    if (req.url?.includes("/rate-limit/")) {
+      res.writeHead(429, { "content-type": "application/json", "retry-after": "1" });
+      res.end(JSON.stringify({ error: { message: "exceeded retry limit, last status: 429 Too Many Requests" } }));
+      return;
+    }
+    if (req.url?.includes("/semantic-rate-limit/")) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(`event: response.created\ndata: ${JSON.stringify({ type: "response.created", response: { id: "resp_rate_limit" } })}\n\n`);
+      res.end(`event: response.failed\ndata: ${JSON.stringify({
+        type: "response.failed",
+        response: {
+          status: "failed",
+          error: { message: "exceeded retry limit, last status: 429 Too Many Requests" },
+        },
+      })}\n\n`);
+      return;
+    }
     if (req.url?.includes("/fail/")) {
       res.writeHead(500, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: { message: "mock primary failed" } }));

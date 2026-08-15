@@ -16,11 +16,12 @@ const LOCAL_REJECTION_CATEGORIES = new Set([
   "concurrency_limited",
 ]);
 class UpstreamSemanticFailureError extends Error {
-  constructor(status, message, capacity = false) {
+  constructor(status, message, category = "upstream_semantic_failure") {
     super(message);
     this.name = "UpstreamSemanticFailureError";
     this.status = status;
-    this.capacity = capacity;
+    this.category = category;
+    this.retryable = category === "capacity" || category === "rate_limit";
   }
 }
 class FirstTokenTimeoutError extends Error {
@@ -285,20 +286,23 @@ export class RouterEngine {
         clearTimeout(requestTimer);
         this.releaseProvider(provider.id, probe);
         const message = extractUpstreamError(responseText, upstream.status);
-        this.finishAttempt(attemptId, attemptMono, "failed", upstream.status, classification.category, message);
+        const retryCategory = sameProviderRetryCategory(upstream.status, message);
+        const category = retryCategory || classification.category;
+        this.finishAttempt(attemptId, attemptMono, "failed", upstream.status, category, message);
         this.publishAttempt(requestId, attemptId);
-        if (isCapacityError(message)) {
+        if (retryCategory) {
           const retries = providerRetryCounts.get(provider.id) ?? 0;
           if (retries < providerRetryLimit) {
             providerRetryCounts.set(provider.id, retries + 1);
             maxAttempts += 1;
             retryProviderId = provider.id;
-            finalError = { status: upstream.status, category: "capacity_retry", message };
+            finalError = { status: upstream.status, category, message };
             continue;
           }
         }
-        this.recordFailure(provider, classification.category, retryAfterMs(upstream.headers));
-        finalError = { status: upstream.status, category: classification.category, message };
+        const cooldownMs = retryAfterMs(upstream.headers);
+        this.recordFailure(provider, category, cooldownMs);
+        finalError = { status: upstream.status, category, message, retryAfterMs: cooldownMs };
         if (!route.group.failover_enabled) break;
         continue;
       }
@@ -410,18 +414,18 @@ export class RouterEngine {
         this.releaseProvider(provider.id, probe);
         if (error instanceof UpstreamSemanticFailureError && !clientTerminationReason(clientController)) {
           const retries = providerRetryCounts.get(provider.id) ?? 0;
-          const canRetrySameProvider = error.capacity && retries < providerRetryLimit;
-          this.finishAttempt(attemptId, attemptMono, "failed", error.status ?? upstream.status, error.capacity ? "capacity" : "upstream_semantic_failure", error.message);
+          const canRetrySameProvider = error.retryable && retries < providerRetryLimit;
+          this.finishAttempt(attemptId, attemptMono, "failed", error.status ?? upstream.status, error.category, error.message);
           this.publishAttempt(requestId, attemptId);
           if (canRetrySameProvider) {
             providerRetryCounts.set(provider.id, retries + 1);
             maxAttempts += 1;
             retryProviderId = provider.id;
-            finalError = { status: error.status ?? upstream.status, category: "capacity_retry", message: error.message };
+            finalError = { status: error.status ?? upstream.status, category: error.category, message: error.message };
             continue;
           }
-          this.recordFailure(provider, error.capacity ? "capacity" : "upstream_semantic_failure");
-          finalError = { status: error.status ?? upstream.status, category: error.capacity ? "capacity" : "upstream_semantic_failure", message: error.message };
+          this.recordFailure(provider, error.category);
+          finalError = { status: error.status ?? upstream.status, category: error.category, message: error.message };
           if (!route.group.failover_enabled) break;
           continue;
         }
@@ -1619,11 +1623,23 @@ function semanticFailureFromPayload(payload, status) {
       || (typeof error === "string" ? error : "")
       || (failedStatus ? `Responses upstream ${response.status}` : "Responses upstream emitted an error before output"),
   );
-  return new UpstreamSemanticFailureError(status, message, isCapacityError(message));
+  const category = sameProviderRetryCategory(status, message) || "upstream_semantic_failure";
+  const errorStatus = category === "rate_limit" ? 429 : category === "capacity" ? 503 : status;
+  return new UpstreamSemanticFailureError(errorStatus, message, category);
 }
 
 function isCapacityError(message) {
   return /(?:at\s+capacity|capacity|try\s+a\s+different\s+model|overloaded)/i.test(String(message || ""));
+}
+
+function isRateLimitError(message) {
+  return /(?:\b429\b|too\s+many\s+requests|rate[\s_-]*limit(?:ed)?|exceeded\s+(?:the\s+)?retry\s+limit)/i.test(String(message || ""));
+}
+
+function sameProviderRetryCategory(status, message) {
+  if (status === 429 || isRateLimitError(message)) return "rate_limit";
+  if (isCapacityError(message)) return "capacity";
+  return null;
 }
 
 function extractUsage(payload) {

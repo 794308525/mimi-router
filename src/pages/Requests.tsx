@@ -268,6 +268,7 @@ function terminationReasonLabel(reason: string | null | undefined) {
     concurrency_limited: "中转并发已满",
     auth_unavailable: "中转鉴权不可用",
     capacity: "上游容量不足",
+    rate_limit: "上游限流",
     upstream_5xx: "上游服务错误",
   };
   return reason ? labels[reason] || reason : "请求未正常结束";

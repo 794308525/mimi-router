@@ -331,6 +331,57 @@ test("retries capacity failures on the same provider before failing over", async
   assert.equal(updatedCapacity.consecutive_failures, 1);
 });
 
+for (const scenario of [
+  { name: "HTTP 429", path: "rate-limit" },
+  { name: "an HTTP 200 semantic 429 failure", path: "semantic-rate-limit" },
+]) {
+  test(`retries ${scenario.name} on the same provider before failing over`, async () => {
+    const limited = await post("/api/providers", {
+      name: `Rate limited ${scenario.path}`,
+      base_url: `http://127.0.0.1:${mockPort}/${scenario.path}/v1`,
+    });
+    const providers = await get("/api/providers");
+    const secondary = providers.find((provider) => provider.name === "Secondary success");
+    const routes = await get("/api/routes");
+    const group = routes.groups[0];
+    const originalMembers = group.members;
+    await put(`/api/route-groups/${group.id}`, {
+      ...group,
+      max_attempts: 2,
+      provider_retry_attempts: 2,
+      members: [
+        { provider_id: limited.id, priority: 1, weight: 100, enabled: true },
+        { provider_id: secondary.id, priority: 2, weight: 100, enabled: true },
+      ],
+    });
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello", stream: true }),
+      });
+      const stream = await response.text();
+      assert.equal(response.status, 200);
+      assert.doesNotMatch(stream, /exceeded retry limit/i);
+      assert.match(stream, /response\.output_text\.delta/);
+
+      const completed = (await get("/api/requests?limit=10"))[0];
+      const detail = await get(`/api/requests/${completed.id}`);
+      assert.equal(detail.status, "completed");
+      assert.equal(detail.attempt_count, 4);
+      assert.deepEqual(
+        detail.attempts.map((attempt) => attempt.provider_name),
+        [limited.name, limited.name, limited.name, "Secondary success"],
+      );
+      assert.ok(detail.attempts.slice(0, 3).every((attempt) => attempt.error_category === "rate_limit"));
+    } finally {
+      await put(`/api/route-groups/${group.id}`, { ...group, members: originalMembers });
+      await send("DELETE", `/api/providers/${limited.id}`, {});
+    }
+  });
+}
+
 test("races one different channel after a first-token timeout", async () => {
   const slow = await post("/api/providers", {
     name: "Slow first token",
