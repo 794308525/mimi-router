@@ -58,6 +58,9 @@ fn start_gateway(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(&data_dir)?;
     fs::create_dir_all(&log_dir)?;
 
+    #[cfg(target_os = "windows")]
+    let node_path = resource_dir.join("runtime/node.exe");
+    #[cfg(not(target_os = "windows"))]
     let node_path = resource_dir.join("runtime/node");
     let server_path = resource_dir.join("server/index.mjs");
     let log = OpenOptions::new()

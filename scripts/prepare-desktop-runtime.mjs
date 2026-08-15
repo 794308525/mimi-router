@@ -21,16 +21,23 @@ const NODE_VERSION = "22.22.0";
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const nodeArch = process.arch === "arm64" ? "arm64" : process.arch === "x64" ? "x64" : null;
 
-if (process.platform !== "darwin" || !nodeArch) {
+if (!nodeArch || !["darwin", "win32"].includes(process.platform)) {
   throw new Error(`桌面运行时准备暂不支持 ${process.platform}/${process.arch}`);
 }
 
-const archiveName = `node-v${NODE_VERSION}-darwin-${nodeArch}.tar.xz`;
+if (process.platform === "win32" && nodeArch !== "x64") {
+  throw new Error(`Windows 桌面运行时暂不支持 ${process.arch}`);
+}
+
+const archiveName = process.platform === "win32"
+  ? `node-v${NODE_VERSION}-win-${nodeArch}.zip`
+  : `node-v${NODE_VERSION}-darwin-${nodeArch}.tar.xz`;
 const releaseRoot = `https://nodejs.org/dist/v${NODE_VERSION}`;
 const cacheDir = join(projectRoot, ".desktop-runtime");
 const archivePath = join(cacheDir, archiveName);
 const runtimeDir = join(projectRoot, "src-tauri", "runtime");
-const runtimeNode = join(runtimeDir, "node");
+const runtimeFile = process.platform === "win32" ? "node.exe" : "node";
+const runtimeNode = join(runtimeDir, runtimeFile);
 const temporaryArchive = `${archivePath}.download`;
 
 mkdirSync(cacheDir, { recursive: true });
@@ -49,28 +56,36 @@ if (!existsSync(archivePath) || sha256(archivePath) !== expectedHash) {
   rmSync(temporaryArchive, { force: true });
   const archiveResponse = await fetch(`${releaseRoot}/${archiveName}`);
   if (!archiveResponse.ok || !archiveResponse.body) {
-    throw new Error(`Node ARM64 运行时下载失败 (${archiveResponse.status})`);
+    throw new Error(`Node ${nodeArch} 运行时下载失败 (${archiveResponse.status})`);
   }
   await pipeline(Readable.fromWeb(archiveResponse.body), createWriteStream(temporaryArchive));
   if (sha256(temporaryArchive) !== expectedHash) {
     rmSync(temporaryArchive, { force: true });
-    throw new Error("Node ARM64 运行时校验失败");
+    throw new Error(`Node ${nodeArch} 运行时校验失败`);
   }
   renameSync(temporaryArchive, archivePath);
 }
 
 const extractDir = mkdtempSync(join(tmpdir(), "mimi-router-node-"));
 try {
-  execFileSync("tar", ["-xJf", archivePath, "-C", extractDir], { stdio: "inherit" });
-  const extractedRoot = join(extractDir, archiveName.replace(/\.tar\.xz$/, ""));
-  copyFileSync(join(extractedRoot, "bin", "node"), runtimeNode);
+  const extractArgs = process.platform === "win32"
+    ? ["-xf", archivePath, "-C", extractDir]
+    : ["-xJf", archivePath, "-C", extractDir];
+  execFileSync("tar", extractArgs, { stdio: "inherit" });
+  const extractedRoot = join(extractDir, archiveName.replace(/\.(?:tar\.xz|zip)$/, ""));
+  const extractedNode = process.platform === "win32"
+    ? join(extractedRoot, "node.exe")
+    : join(extractedRoot, "bin", "node");
+  rmSync(join(runtimeDir, "node"), { force: true });
+  rmSync(join(runtimeDir, "node.exe"), { force: true });
+  copyFileSync(extractedNode, runtimeNode);
   copyFileSync(join(extractedRoot, "LICENSE"), join(runtimeDir, "LICENSE.node.txt"));
-  chmodSync(runtimeNode, 0o755);
+  if (process.platform !== "win32") chmodSync(runtimeNode, 0o755);
 } finally {
   rmSync(extractDir, { recursive: true, force: true });
 }
 
-console.log(`[desktop] Node ${NODE_VERSION} ${nodeArch} 运行时已准备`);
+console.log(`[desktop] Node ${NODE_VERSION} ${process.platform}/${nodeArch} 运行时已准备`);
 
 function sha256(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
