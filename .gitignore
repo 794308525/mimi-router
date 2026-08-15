@@ -1,0 +1,7 @@
+node_modules/
+dist/
+data/
+src-tauri/runtime/
+src-tauri/target/
+.desktop-runtime/
+*.log
