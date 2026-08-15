@@ -70,6 +70,7 @@ export type BenchmarkRun = {
   route_member_ids: string[];
   model: string;
   attempts: number;
+  timeout_seconds: number;
   total_samples: number;
   completed_samples: number;
   started_at: string;

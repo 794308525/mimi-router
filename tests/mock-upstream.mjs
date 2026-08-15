@@ -34,6 +34,7 @@ const server = createServer((req, res) => {
       res.end(JSON.stringify({ error: { message: "mock primary failed" } }));
       return;
     }
+    if (req.url?.includes("/hang/")) return;
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
     if (compact) {
       res.writeHead(200, { "content-type": "application/json" });

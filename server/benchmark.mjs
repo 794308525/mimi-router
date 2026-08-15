@@ -9,7 +9,7 @@ import { DEFAULT_TEST_MODEL } from "./constants.mjs";
 
 const MAX_RUNS = 20;
 const PROVIDER_CONCURRENCY = 4;
-const SAMPLE_TIMEOUT_MS = 120000;
+const DEFAULT_SAMPLE_TIMEOUT_SECONDS = 30;
 const EXTRA_SAMPLE_SPREAD_MS = 5000;
 
 export class BenchmarkService {
@@ -27,6 +27,7 @@ export class BenchmarkService {
     const model = String(input.model || DEFAULT_TEST_MODEL).trim();
     if (!model) throw new Error("测评模型不能为空");
     const attempts = clampInteger(input.attempts, 3, 1, 10);
+    const timeoutSeconds = clampInteger(input.timeout_seconds, DEFAULT_SAMPLE_TIMEOUT_SECONDS, 1, 300);
     const providers = group.members
       .filter((member) => member.enabled && member.provider_enabled)
       .map((member) => {
@@ -51,6 +52,7 @@ export class BenchmarkService {
       route_member_ids: group.members.map((member) => member.provider_id),
       model,
       attempts,
+      timeout_seconds: timeoutSeconds,
       total_samples: providers.length * attempts,
       completed_samples: 0,
       started_at: new Date().toISOString(),
@@ -153,6 +155,7 @@ export class BenchmarkService {
       secret: getSecret(this.dataDir, provider.id),
       model: run.model,
       signal: run.controller.signal,
+      timeoutMs: run.timeout_seconds * 1000,
     });
     if (sample.cancelled && run.controller.signal.aborted) return;
     result.samples.push({ index: result.samples.length + 1, ...sample });
@@ -175,9 +178,9 @@ export class BenchmarkService {
   }
 }
 
-async function benchmarkProvider({ provider, secret, model, signal }) {
+export async function benchmarkProvider({ provider, secret, model, signal, timeoutMs }) {
   const started = performance.now();
-  const timeoutSignal = AbortSignal.timeout(SAMPLE_TIMEOUT_MS);
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
   try {
     const response = await fetch(responsesUrl(provider.base_url), {
       method: "POST",
@@ -232,7 +235,7 @@ async function benchmarkProvider({ provider, secret, model, signal }) {
     if (signal.aborted) {
       return { ...failedSample(started, null, "测评已取消"), cancelled: true };
     }
-    const message = timeoutSignal.aborted ? "单次测评超过 120 秒" : safeMessage(error);
+    const message = timeoutSignal.aborted ? `单次测评超过 ${timeoutMs / 1000} 秒` : safeMessage(error);
     return failedSample(started, null, message);
   }
 }

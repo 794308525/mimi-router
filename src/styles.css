@@ -442,7 +442,7 @@ input:disabled, select:disabled { background: #edf0f1; }
 .notice .icon-button { margin-left: auto; }
 
 .benchmark-dialog { display: flex; flex-direction: column; gap: 15px; }
-.benchmark-config-grid { display: grid; grid-template-columns: minmax(170px, 1fr) minmax(220px, 1.25fr) 110px 130px; gap: 10px; }
+.benchmark-config-grid { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(190px, 1.2fr) 100px 115px 115px; gap: 10px; }
 .benchmark-mode-row { padding: 11px 12px; border-radius: 8px; background: var(--surface-soft); display: grid; grid-template-columns: minmax(170px, 1fr) repeat(3, 100px); gap: 10px; }
 .benchmark-config-grid label, .benchmark-mode-row label { display: flex; flex-direction: column; gap: 5px; color: #4e5a65; font-size: 11px; font-weight: 650; }
 .benchmark-results { border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }

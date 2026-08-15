@@ -46,7 +46,7 @@ export const api = {
   ),
   providerSecret: (id: string) => request<{ api_key: string }>(`/api/providers/${id}/secret`),
   resetCircuit: (id: string) => request<Provider>(`/api/providers/${id}/reset-circuit`, { method: "POST" }),
-  startBenchmark: (body: { route_group_id: string; model: string; attempts: number }) =>
+  startBenchmark: (body: { route_group_id: string; model: string; attempts: number; timeout_seconds: number }) =>
     request<BenchmarkRun>("/api/benchmarks", { method: "POST", body: JSON.stringify(body) }),
   benchmark: (id: string) => request<BenchmarkRun>(`/api/benchmarks/${id}`),
   cancelBenchmark: (id: string) => request<BenchmarkRun>(`/api/benchmarks/${id}/cancel`, { method: "POST" }),

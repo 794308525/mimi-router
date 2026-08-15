@@ -219,6 +219,40 @@ test("benchmarks enabled route members without writing requests or circuit healt
   assert.equal(sorted[1].priority, 2);
 });
 
+test("marks timed out benchmark samples as failed and continues", async () => {
+  const hanging = await post("/api/providers", {
+    name: "Hanging benchmark",
+    base_url: `http://127.0.0.1:${mockPort}/hang/v1`,
+  });
+  const routes = await get("/api/routes");
+  const group = routes.groups[0];
+  const originalMembers = group.members;
+  await put(`/api/route-groups/${group.id}`, {
+    ...group,
+    members: [{ provider_id: hanging.id, priority: 1, weight: 100, enabled: true }],
+  });
+
+  try {
+    const startedAt = Date.now();
+    const started = await post("/api/benchmarks", {
+      route_group_id: group.id,
+      model: "gpt-5.6-terra",
+      attempts: 1,
+      timeout_seconds: 1,
+    });
+    const run = await waitForBenchmark(started.id);
+    assert.equal(run.status, "completed");
+    assert.equal(run.timeout_seconds, 1);
+    assert.equal(run.providers[0].samples.length, 3);
+    assert.ok(run.providers[0].samples.every((sample) => !sample.ok));
+    assert.ok(run.providers[0].samples.every((sample) => sample.error === "单次测评超过 1 秒"));
+    assert.ok(Date.now() - startedAt < 4500);
+  } finally {
+    await put(`/api/route-groups/${group.id}`, { ...group, members: originalMembers });
+    await send("DELETE", `/api/providers/${hanging.id}`, {});
+  }
+});
+
 test("opens the primary circuit after three consecutive retryable failures", async () => {
   for (let index = 0; index < 2; index += 1) {
     const response = await fetch(`http://127.0.0.1:${gatewayPort}/v1/responses`, {

@@ -26,6 +26,7 @@ export function BenchmarkDialog({
   const [groupId, setGroupId] = useState(initial.route_group_id || groups[0]?.id || "");
   const [model, setModel] = useState(initial.model || DEFAULT_TEST_MODEL);
   const [attempts, setAttempts] = useState(initial.attempts || 3);
+  const [timeoutSeconds, setTimeoutSeconds] = useState(initial.timeout_seconds || 30);
   const [targetSeconds, setTargetSeconds] = useState(initial.target_seconds || 5);
   const [mode, setMode] = useState<BenchmarkMode>(initial.mode || DEFAULT_MODE);
   const [weights, setWeights] = useState<BenchmarkWeights>(initial.weights || BENCHMARK_MODES[DEFAULT_MODE].weights);
@@ -53,11 +54,12 @@ export function BenchmarkDialog({
       route_group_id: groupId,
       model: model.trim(),
       attempts,
+      timeout_seconds: timeoutSeconds,
       target_seconds: targetSeconds,
       mode,
       weights,
     }));
-  }, [groupId, model, attempts, targetSeconds, mode, weights]);
+  }, [groupId, model, attempts, timeoutSeconds, targetSeconds, mode, weights]);
 
   const scored = useMemo(
     () => run ? scoreBenchmark(run, weights, targetSeconds * 1000) : [],
@@ -85,6 +87,7 @@ export function BenchmarkDialog({
         route_group_id: groupId,
         model: model.trim(),
         attempts,
+        timeout_seconds: timeoutSeconds,
       });
       activeRunId.current = created.id;
       setRun(created);
@@ -134,6 +137,7 @@ export function BenchmarkDialog({
             : <label>路由组<select value={groupId} onChange={(event) => setGroupId(event.target.value)} disabled={Boolean(running)}>{groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label>}
           <label>测评模型<input value={model} onChange={(event) => setModel(event.target.value)} disabled={Boolean(running)} /></label>
           <label>基础次数<input type="number" min="1" max="10" value={attempts} onChange={(event) => setAttempts(clamp(Number(event.target.value), 1, 10))} disabled={Boolean(running)} /></label>
+          <label>单次超时（秒）<input type="number" min="1" max="300" value={timeoutSeconds} onChange={(event) => setTimeoutSeconds(clamp(Number(event.target.value), 1, 300))} disabled={Boolean(running)} /></label>
           <label>达标首字（秒）<input type="number" min="1" max="60" value={targetSeconds} onChange={(event) => setTargetSeconds(clamp(Number(event.target.value), 1, 60))} /></label>
         </div>
 
@@ -215,6 +219,7 @@ function readLastSettings(): Partial<{
   route_group_id: string;
   model: string;
   attempts: number;
+  timeout_seconds: number;
   target_seconds: number;
   mode: BenchmarkMode;
   weights: BenchmarkWeights;
