@@ -105,6 +105,51 @@ export function RequestStatus({ status }: { status: RequestRecord["status"] }) {
   return <span className={`status status-${tone}`}>{labels[status]}</span>;
 }
 
+const FAILURE_REASON_LABELS: Record<string, string> = {
+  user_cancelled: "用户主动取消",
+  client_disconnected: "客户端连接断开",
+  relay_cancelled: "网关自动切换中止",
+  race_lost: "竞速未胜出",
+  stream_interrupted: "上游流异常中断",
+  process_interrupted: "网关进程中断",
+  timeout: "上游超时",
+  network: "网络错误",
+  no_route: "没有匹配路由",
+  no_provider: "没有可用中转",
+  no_enabled_provider: "没有启用的中转",
+  circuit_open: "中转熔断中",
+  circuit_probe_in_progress: "中转恢复探测中",
+  concurrency_limited: "中转并发已满",
+  auth: "上游鉴权失败",
+  auth_unavailable: "中转鉴权不可用",
+  capacity: "上游容量不足",
+  rate_limit: "上游限流",
+  server_error: "上游服务异常",
+  vector_store_timeout: "向量检索超时",
+  incomplete_max_output_tokens: "输出达到 Token 上限",
+  incomplete_content_filter: "内容被安全策略截断",
+  response_incomplete: "上游响应未完整结束",
+  upstream_5xx: "上游服务错误",
+  upstream_semantic_failure: "上游返回失败事件",
+  request_error: "上游请求错误",
+  invalid_json: "请求格式错误",
+  unsupported_endpoint: "上游不支持该接口",
+  first_token_timeout: "首字等待超时",
+};
+
+export function failureReasonLabel(reason: string | null | undefined) {
+  return reason ? FAILURE_REASON_LABELS[reason] || reason : "请求未正常结束";
+}
+
+export function RequestFailureReason({ request }: {
+  request: Pick<RequestRecord, "error_category" | "error_message" | "termination_reason">;
+}) {
+  const reason = request.termination_reason || request.error_category;
+  if (!reason && !request.error_message) return null;
+  const label = reason ? failureReasonLabel(reason) : request.error_message || "请求未正常结束";
+  return <small className="request-failure-reason" title={request.error_message || label}>{label}</small>;
+}
+
 export function EmptyState({ title, description, action }: { title: string; description: string; action?: ReactNode }) {
   return (
     <div className="empty-state">

@@ -9,7 +9,9 @@ import {
   ElapsedTime,
   Modal,
   PageHeader,
+  RequestFailureReason,
   RequestStatus,
+  failureReasonLabel,
   formatDuration,
   formatRequestCost,
   formatTime,
@@ -132,7 +134,7 @@ export function RequestsPage({
                 const firstToken = firstTokenDisplay(request, ttftBaselines.get(ttftBaselineKey(request)));
                 return (
                   <tr key={request.id} className={running ? "running-row" : ""} onClick={() => openDetail(request)}>
-                    <td><RequestStatus status={request.status} /></td>
+                    <td><div className="request-status-cell"><RequestStatus status={request.status} /><RequestFailureReason request={request} /></div></td>
                     <td><span className="tabular">{formatTime(request.started_at)}</span></td>
                     <td><div className="model-cell"><strong>{request.requested_model || "识别中"}</strong>{request.upstream_model && request.upstream_model !== request.requested_model && <small>→ {request.upstream_model}</small>}</div></td>
                     <td>{request.provider_name || <span className="text-muted">等待路由</span>}</td>
@@ -198,7 +200,7 @@ function RequestDetail({
         <div><span>最后事件</span><strong>{request.last_stream_event || "-"}</strong></div>
         <div><span>费用状态</span><strong>{costStatusLabel(request.cost_status)}</strong></div>
       </div>
-      {(request.error_message || request.termination_reason) && <div className="error-box"><strong>{terminationReasonLabel(request.termination_reason || request.error_category)}</strong><p>{request.error_message || terminationReasonLabel(request.termination_reason)}</p></div>}
+      {(request.error_message || request.termination_reason) && <div className="error-box"><strong>{failureReasonLabel(request.termination_reason || request.error_category)}</strong><p>{request.error_message || failureReasonLabel(request.termination_reason)}</p></div>}
       <section className="attempts-section">
         <header><h3>上游尝试</h3>{loading && <RefreshCcw size={15} className="spin" />}</header>
         {request.attempts?.length ? (
@@ -207,7 +209,7 @@ function RequestDetail({
               <div className="attempt-item" key={attempt.id}>
                 <span className={`attempt-node ${attempt.status}`} />
                 <div><strong>{attempt.sequence}. {attempt.provider_name}</strong><small>{formatTime(attempt.started_at)} · {formatTokens(attempt.input_tokens == null && attempt.output_tokens == null ? null : (attempt.input_tokens ?? 0) + (attempt.output_tokens ?? 0))} · {formatRequestCost(attempt.total_cost_usd, attempt.cost_status)}</small><small>{attemptTimingLabel(attempt)}</small></div>
-                <span>{terminationReasonLabel(attempt.termination_reason || attempt.error_category || streamPhaseLabel(attempt.stream_phase) || (attempt.status === "completed" ? "完成" : attempt.status))}</span>
+                <span title={attempt.error_message || undefined}>{failureReasonLabel(attempt.termination_reason || attempt.error_category || streamPhaseLabel(attempt.stream_phase) || (attempt.status === "completed" ? "完成" : attempt.status))}</span>
                 <strong>{formatDuration(attempt.duration_ms)}</strong>
               </div>
             ))}
@@ -249,27 +251,4 @@ function streamPhaseLabel(phase: string | null | undefined) {
     failed: "流中报错",
   };
   return phase ? labels[phase] || phase : "-";
-}
-
-function terminationReasonLabel(reason: string | null | undefined) {
-  const labels: Record<string, string> = {
-    user_cancelled: "用户主动取消",
-    client_disconnected: "客户端连接断开",
-    relay_cancelled: "网关自动切换中止",
-    race_lost: "竞速未胜出",
-    stream_interrupted: "上游流异常中断",
-    process_interrupted: "网关进程中断",
-    timeout: "上游超时",
-    network: "网络错误",
-    no_provider: "没有可用中转",
-    no_enabled_provider: "没有启用的中转",
-    circuit_open: "中转熔断中",
-    circuit_probe_in_progress: "中转恢复探测中",
-    concurrency_limited: "中转并发已满",
-    auth_unavailable: "中转鉴权不可用",
-    capacity: "上游容量不足",
-    rate_limit: "上游限流",
-    upstream_5xx: "上游服务错误",
-  };
-  return reason ? labels[reason] || reason : "请求未正常结束";
 }

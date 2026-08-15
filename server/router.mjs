@@ -15,13 +15,20 @@ const LOCAL_REJECTION_CATEGORIES = new Set([
   "circuit_probe_in_progress",
   "concurrency_limited",
 ]);
+const RETRYABLE_SEMANTIC_CATEGORIES = new Set([
+  "capacity",
+  "rate_limit",
+  "server_error",
+  "vector_store_timeout",
+]);
 class UpstreamSemanticFailureError extends Error {
-  constructor(status, message, category = "upstream_semantic_failure") {
+  constructor(status, message, category = "upstream_semantic_failure", code = "") {
     super(message);
     this.name = "UpstreamSemanticFailureError";
     this.status = status;
     this.category = category;
-    this.retryable = category === "capacity" || category === "rate_limit";
+    this.code = code;
+    this.retryable = RETRYABLE_SEMANTIC_CATEGORIES.has(category);
   }
 }
 class FirstTokenTimeoutError extends Error {
@@ -415,7 +422,7 @@ export class RouterEngine {
         if (error instanceof UpstreamSemanticFailureError && !clientTerminationReason(clientController)) {
           const retries = providerRetryCounts.get(provider.id) ?? 0;
           const canRetrySameProvider = error.retryable && retries < providerRetryLimit;
-          this.finishAttempt(attemptId, attemptMono, "failed", error.status ?? upstream.status, error.category, error.message);
+          this.finishAttempt(attemptId, attemptMono, "failed", upstream.status, error.category, error.message);
           this.publishAttempt(requestId, attemptId);
           if (canRetrySameProvider) {
             providerRetryCounts.set(provider.id, retries + 1);
@@ -726,11 +733,11 @@ export class RouterEngine {
       for await (const chunk of streamReaderWithIdleTimeout(reader, streamIdleTimeoutMs)) {
         const buffer = Buffer.from(chunk);
         parser.push(buffer);
-        if (candidate.semanticFailure) throw candidate.semanticFailure;
+        if (candidate.semanticFailure && !candidate.firstOutputRecorded) throw candidate.semanticFailure;
         if (!res.write(buffer)) await onceDrain(res);
       }
       parser.finish();
-      if (candidate.semanticFailure) throw candidate.semanticFailure;
+      if (candidate.semanticFailure && !candidate.firstOutputRecorded) throw candidate.semanticFailure;
       res.end();
     } catch (error) {
       clearTimeout(requestTimer);
@@ -777,6 +784,40 @@ export class RouterEngine {
       return;
     }
     clearTimeout(requestTimer);
+    if (candidate.semanticFailure) {
+      this.completeTerminalFailure({
+        requestId,
+        requestStartedMono,
+        attemptId,
+        attemptMono,
+        provider,
+        upstreamModel,
+        probe,
+        upstream,
+        usage: candidate.usage,
+        responseId: candidate.responseId,
+        failure: candidate.semanticFailure,
+        affectsProviderHealth: true,
+      });
+      return;
+    }
+    if (candidate.incompleteFailure) {
+      this.completeTerminalFailure({
+        requestId,
+        requestStartedMono,
+        attemptId,
+        attemptMono,
+        provider,
+        upstreamModel,
+        probe,
+        upstream,
+        usage: candidate.usage,
+        responseId: candidate.responseId,
+        failure: candidate.incompleteFailure,
+        affectsProviderHealth: false,
+      });
+      return;
+    }
     this.completeSuccess({
       requestId,
       requestStartedMono,
@@ -863,6 +904,7 @@ export class RouterEngine {
     let responseId = "";
     let firstOutputRecorded = false;
     let semanticFailure = null;
+    let incompleteFailure = null;
     const markFirstOutput = () => {
       if (firstOutputRecorded) return;
       firstOutputRecorded = true;
@@ -889,6 +931,7 @@ export class RouterEngine {
           responseId = extractResponseId(payload) || responseId;
           this.observeAttemptPayload({ requestId, attemptId, upstreamModel, payload });
           semanticFailure ??= semanticFailureFromPayload(payload, upstream.status);
+          incompleteFailure ??= incompleteFailureFromPayload(payload);
           if (!semanticFailure && isMeaningfulStreamOutput(payload)) markFirstOutput();
         });
 
@@ -914,11 +957,11 @@ export class RouterEngine {
         for await (const chunk of streamReaderWithIdleTimeout(reader, streamIdleTimeoutMs)) {
           const buffer = Buffer.from(chunk);
           parser.push(buffer);
-          if (semanticFailure) throw semanticFailure;
+          if (semanticFailure && !firstOutputRecorded) throw semanticFailure;
           if (!res.write(buffer)) await onceDrain(res);
         }
         parser.finish();
-        if (semanticFailure) throw semanticFailure;
+        if (semanticFailure && !firstOutputRecorded) throw semanticFailure;
         if (!firstOutputRecorded) markFirstOutput();
         res.end();
       } else {
@@ -926,6 +969,7 @@ export class RouterEngine {
         try {
           const payload = JSON.parse(buffer.toString("utf8"));
           semanticFailure = semanticFailureFromPayload(payload, upstream.status);
+          incompleteFailure = incompleteFailureFromPayload(payload);
           usage = extractUsage(payload) ?? {};
           responseId = extractResponseId(payload);
           this.observeAttemptPayload({ requestId, attemptId, upstreamModel, payload });
@@ -942,6 +986,40 @@ export class RouterEngine {
       clearTimeout(requestTimer);
     }
 
+    if (semanticFailure) {
+      this.completeTerminalFailure({
+        requestId,
+        requestStartedMono,
+        attemptId,
+        attemptMono,
+        provider,
+        upstreamModel,
+        probe,
+        upstream,
+        usage,
+        responseId,
+        failure: semanticFailure,
+        affectsProviderHealth: true,
+      });
+      return;
+    }
+    if (incompleteFailure) {
+      this.completeTerminalFailure({
+        requestId,
+        requestStartedMono,
+        attemptId,
+        attemptMono,
+        provider,
+        upstreamModel,
+        probe,
+        upstream,
+        usage,
+        responseId,
+        failure: incompleteFailure,
+        affectsProviderHealth: false,
+      });
+      return;
+    }
     this.completeSuccess({
       requestId,
       requestStartedMono,
@@ -1000,6 +1078,55 @@ export class RouterEngine {
       last_stream_event: "response.completed",
       upstream_response_id: responseId || undefined,
       cost_status: this.requestCostStatus(requestId),
+    });
+  }
+
+  completeTerminalFailure({
+    requestId,
+    requestStartedMono,
+    attemptId,
+    attemptMono,
+    provider,
+    upstreamModel,
+    probe,
+    upstream,
+    usage,
+    responseId,
+    failure,
+    affectsProviderHealth,
+  }) {
+    const usageFields = usage && (usage.input_tokens != null || usage.output_tokens != null)
+      ? usageFieldsForModel(this.db, upstreamModel, usage, true)
+      : { cost_status: "unknown" };
+    this.updateAttempt(attemptId, {
+      ...usageFields,
+      stream_phase: failure.streamPhase || "failed",
+      last_stream_event: failure.lastStreamEvent || "response.failed",
+      upstream_response_id: responseId || undefined,
+    });
+    this.releaseProvider(provider.id, probe);
+    if (affectsProviderHealth) this.recordFailure(provider, failure.category);
+    this.finishAttempt(attemptId, attemptMono, "failed", upstream.status, failure.category, failure.message, {
+      termination_reason: failure.category,
+      stream_phase: failure.streamPhase || "failed",
+      last_stream_event: failure.lastStreamEvent || "response.failed",
+      upstream_response_id: responseId || undefined,
+      cost_status: usageFields.cost_status,
+    });
+    this.publishAttempt(requestId, attemptId);
+    const costStatus = this.syncRequestUsage(requestId);
+    this.finishRequest(requestId, requestStartedMono, {
+      status: "failed",
+      http_status: upstream.status,
+      final_provider_id: provider.id,
+      upstream_model: upstreamModel,
+      error_category: failure.category,
+      error_message: failure.message,
+      termination_reason: failure.category,
+      stream_phase: failure.streamPhase || "failed",
+      last_stream_event: failure.lastStreamEvent || "response.failed",
+      upstream_response_id: responseId || undefined,
+      cost_status: costStatus,
     });
   }
 
@@ -1293,7 +1420,7 @@ export class RouterEngine {
       "http_status", "error_category", "error_message",
       "termination_reason", "stream_phase", "last_stream_event", "upstream_response_id", "cost_status",
     ];
-    const entries = Object.entries(fields).filter(([key]) => allowed.includes(key));
+    const entries = Object.entries(fields).filter(([key, value]) => allowed.includes(key) && value !== undefined);
     if (entries.length === 0) return;
     this.db.prepare(`UPDATE requests SET ${entries.map(([key]) => `${key} = ?`).join(", ")} WHERE id = ?`)
       .run(...entries.map(([, value]) => value), id);
@@ -1616,16 +1743,48 @@ function semanticFailureFromPayload(payload, status) {
   const type = String(payload?.type || "");
   const response = payload?.response ?? payload;
   const error = payload?.error ?? response?.error;
+  const code = String(error?.code || payload?.code || response?.code || "");
   const failedStatus = ["failed", "cancelled"].includes(String(response?.status || ""));
   if (!failedStatus && type !== "response.failed" && type !== "error" && !error) return null;
   const message = String(
     error?.message
       || (typeof error === "string" ? error : "")
+      || payload?.message
+      || response?.message
       || (failedStatus ? `Responses upstream ${response.status}` : "Responses upstream emitted an error before output"),
   );
-  const category = sameProviderRetryCategory(status, message) || "upstream_semantic_failure";
-  const errorStatus = category === "rate_limit" ? 429 : category === "capacity" ? 503 : status;
-  return new UpstreamSemanticFailureError(errorStatus, message, category);
+  const category = sameProviderRetryCategory(status, message, code) || "upstream_semantic_failure";
+  const errorStatus = status >= 400 ? status : category === "rate_limit" ? 429 : category === "capacity" ? 503 : 502;
+  return new UpstreamSemanticFailureError(errorStatus, message, category, code);
+}
+
+function incompleteFailureFromPayload(payload) {
+  const type = String(payload?.type || "");
+  const response = payload?.response ?? payload;
+  if (type !== "response.incomplete" && response?.status !== "incomplete") return null;
+  const reason = String(response?.incomplete_details?.reason || "");
+  if (reason === "max_output_tokens") {
+    return {
+      category: "incomplete_max_output_tokens",
+      message: "输出达到最大 Token 限制，响应未完整结束",
+      streamPhase: "incomplete",
+      lastStreamEvent: "response.incomplete",
+    };
+  }
+  if (reason === "content_filter") {
+    return {
+      category: "incomplete_content_filter",
+      message: "内容被安全策略截断，响应未完整结束",
+      streamPhase: "incomplete",
+      lastStreamEvent: "response.incomplete",
+    };
+  }
+  return {
+    category: "response_incomplete",
+    message: reason ? `上游响应未完整结束：${reason}` : "上游响应未完整结束",
+    streamPhase: "incomplete",
+    lastStreamEvent: "response.incomplete",
+  };
 }
 
 function isCapacityError(message) {
@@ -1636,8 +1795,10 @@ function isRateLimitError(message) {
   return /(?:\b429\b|too\s+many\s+requests|rate[\s_-]*limit(?:ed)?|exceeded\s+(?:the\s+)?retry\s+limit)/i.test(String(message || ""));
 }
 
-function sameProviderRetryCategory(status, message) {
-  if (status === 429 || isRateLimitError(message)) return "rate_limit";
+function sameProviderRetryCategory(status, message, code = "") {
+  if (status === 429 || code === "rate_limit_exceeded" || isRateLimitError(message)) return "rate_limit";
+  if (code === "server_error") return "server_error";
+  if (code === "vector_store_timeout") return "vector_store_timeout";
   if (isCapacityError(message)) return "capacity";
   return null;
 }
@@ -1772,6 +1933,7 @@ function createRaceCandidate({
     lastStreamEvent: "",
     streamPhase: "connecting",
     semanticFailure: null,
+    incompleteFailure: null,
     firstOutputRecorded: false,
     firstOutputCommitted: false,
     finished: false,
@@ -1784,6 +1946,7 @@ function createRaceCandidate({
     candidate.streamPhase = streamPhaseForPayload(payload) || candidate.streamPhase;
     onPayload?.(payload);
     candidate.semanticFailure ??= semanticFailureFromPayload(payload, upstream.status);
+    candidate.incompleteFailure ??= incompleteFailureFromPayload(payload);
     if (!candidate.semanticFailure && isMeaningfulStreamOutput(payload)) {
       candidate.firstOutputRecorded = true;
     }

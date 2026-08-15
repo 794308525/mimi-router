@@ -257,10 +257,10 @@ code { font-family: "SFMono-Regular", Consolas, monospace; }
 .overview-usage-table .home-table-title { min-height: 58px; padding: 10px 0; }
 .overview-usage-table table { background: transparent; }
 .overview-records-table { min-width: 960px; table-layout: fixed; }
-.records-col-status { width: 9%; }
+.records-col-status { width: 12%; }
 .records-col-time { width: 11%; }
 .records-col-provider { width: 12%; }
-.records-col-token { width: 23%; }
+.records-col-token { width: 20%; }
 .records-col-headers { width: 7%; }
 .records-col-first-token { width: 8%; }
 .records-col-generation { width: 7%; }
@@ -391,6 +391,8 @@ tbody tr.is-drag-over-after td { box-shadow: inset 0 -2px 0 var(--tech); }
 .filters-bar > span { color: var(--faint); font-size: 10px; white-space: nowrap; }
 .request-table-shell tbody tr { cursor: pointer; }
 .request-table-shell .running-row td { background: #f7faff; }
+.request-status-cell { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.request-failure-reason { max-width: 100%; color: var(--danger); font-size: 10px; font-weight: 600; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-cell { display: flex; flex-direction: column; }
 .model-cell strong { color: var(--text); }
 .model-cell small { color: var(--faint); margin-top: 3px; }

@@ -9,6 +9,7 @@ import {
   ElapsedTime,
   Modal,
   ProviderStatus,
+  RequestFailureReason,
   RequestStatus,
   formatDuration,
   formatRequestCost,
@@ -404,7 +405,7 @@ export function Overview({
               const firstToken = firstTokenDisplay(request, ttftBaselines.get(ttftBaselineKey(request)));
               return (
                 <tr key={request.id}>
-                  <td><RequestStatus status={request.status} /></td>
+                  <td><div className="request-status-cell"><RequestStatus status={request.status} /><RequestFailureReason request={request} /></div></td>
                   <td><span className="tabular">{formatTime(request.started_at)}</span></td>
                   <td>
                     <button className="usage-record-link" type="button" onClick={() => onOpenRequest(request)}>

@@ -46,6 +46,76 @@ const server = createServer((req, res) => {
       })}\n\n`);
       return;
     }
+    if (req.url?.includes("/top-level-rate-limit/")) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(`event: error\ndata: ${JSON.stringify({
+        type: "error",
+        code: "rate_limit_exceeded",
+        message: "Rate limit exceeded",
+        param: null,
+      })}\n\n`);
+      return;
+    }
+    if (req.url?.includes("/semantic-server-error/")) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(`event: response.failed\ndata: ${JSON.stringify({
+        type: "response.failed",
+        response: {
+          status: "failed",
+          error: { code: "server_error", message: "The server encountered an error" },
+        },
+      })}\n\n`);
+      return;
+    }
+    if (req.url?.includes("/late-server-error/")) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "PARTIAL" })}\n\n`);
+      setTimeout(() => res.end(`event: response.failed\ndata: ${JSON.stringify({
+        type: "response.failed",
+        response: {
+          status: "failed",
+          error: { code: "server_error", message: "Late server failure" },
+        },
+      })}\n\n`), 50);
+      return;
+    }
+    if (req.url?.includes("/top-level-vector-timeout/")) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(`event: error\ndata: ${JSON.stringify({
+        type: "error",
+        code: "vector_store_timeout",
+        message: "Vector store search timed out",
+        param: null,
+      })}\n\n`);
+      return;
+    }
+    if (req.url?.includes("/incomplete-max-output/")) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "PARTIAL" })}\n\n`);
+      res.end(`event: response.incomplete\ndata: ${JSON.stringify({
+        type: "response.incomplete",
+        response: {
+          id: "resp_incomplete_max_output",
+          status: "incomplete",
+          incomplete_details: { reason: "max_output_tokens" },
+          usage: { input_tokens: 30, output_tokens: 8, input_tokens_details: { cached_tokens: 5 } },
+        },
+      })}\n\n`);
+      return;
+    }
+    if (req.url?.includes("/incomplete-content-filter/")) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(`event: response.incomplete\ndata: ${JSON.stringify({
+        type: "response.incomplete",
+        response: {
+          id: "resp_incomplete_content_filter",
+          status: "incomplete",
+          incomplete_details: { reason: "content_filter" },
+          usage: { input_tokens: 14, output_tokens: 0, input_tokens_details: { cached_tokens: 0 } },
+        },
+      })}\n\n`);
+      return;
+    }
     if (req.url?.includes("/fail/")) {
       res.writeHead(500, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: { message: "mock primary failed" } }));

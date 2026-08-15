@@ -332,8 +332,11 @@ test("retries capacity failures on the same provider before failing over", async
 });
 
 for (const scenario of [
-  { name: "HTTP 429", path: "rate-limit" },
-  { name: "an HTTP 200 semantic 429 failure", path: "semantic-rate-limit" },
+  { name: "HTTP 429", path: "rate-limit", category: "rate_limit" },
+  { name: "an HTTP 200 semantic 429 failure", path: "semantic-rate-limit", category: "rate_limit" },
+  { name: "an HTTP 200 top-level rate-limit error", path: "top-level-rate-limit", category: "rate_limit" },
+  { name: "an HTTP 200 server error", path: "semantic-server-error", category: "server_error" },
+  { name: "an HTTP 200 vector-store timeout", path: "top-level-vector-timeout", category: "vector_store_timeout" },
 ]) {
   test(`retries ${scenario.name} on the same provider before failing over`, async () => {
     const limited = await post("/api/providers", {
@@ -374,10 +377,111 @@ for (const scenario of [
         detail.attempts.map((attempt) => attempt.provider_name),
         [limited.name, limited.name, limited.name, "Secondary success"],
       );
-      assert.ok(detail.attempts.slice(0, 3).every((attempt) => attempt.error_category === "rate_limit"));
+      assert.ok(detail.attempts.slice(0, 3).every((attempt) => attempt.error_category === scenario.category));
     } finally {
       await put(`/api/route-groups/${group.id}`, { ...group, members: originalMembers });
       await send("DELETE", `/api/providers/${limited.id}`, {});
+    }
+  });
+}
+
+test("does not start a second stream when a retryable semantic failure arrives after output", async () => {
+  const lateFailure = await post("/api/providers", {
+    name: "Late semantic failure",
+    base_url: `http://127.0.0.1:${mockPort}/late-server-error/v1`,
+  });
+  const providers = await get("/api/providers");
+  const secondary = providers.find((provider) => provider.name === "Secondary success");
+  const routes = await get("/api/routes");
+  const group = routes.groups[0];
+  const originalMembers = group.members;
+  await put(`/api/route-groups/${group.id}`, {
+    ...group,
+    max_attempts: 2,
+    provider_retry_attempts: 2,
+    members: [
+      { provider_id: lateFailure.id, priority: 1, weight: 100, enabled: true },
+      { provider_id: secondary.id, priority: 2, weight: 100, enabled: true },
+    ],
+  });
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello", stream: true }),
+    });
+    const stream = await response.text();
+    assert.equal(response.status, 200);
+    assert.match(stream, /PARTIAL/);
+    assert.match(stream, /Late server failure/);
+
+    const record = (await get("/api/requests?limit=10"))[0];
+    const detail = await get(`/api/requests/${record.id}`);
+    assert.equal(detail.status, "failed");
+    assert.equal(detail.error_category, "server_error", detail.error_message);
+    assert.equal(detail.attempt_count, 1);
+    assert.equal(detail.attempts.length, 1);
+  } finally {
+    await put(`/api/route-groups/${group.id}`, { ...group, members: originalMembers });
+    await send("DELETE", `/api/providers/${lateFailure.id}`, {});
+  }
+});
+
+for (const scenario of [
+  {
+    path: "incomplete-max-output",
+    category: "incomplete_max_output_tokens",
+    message: "输出达到最大 Token 限制",
+    lastEvent: "response.incomplete",
+  },
+  {
+    path: "incomplete-content-filter",
+    category: "incomplete_content_filter",
+    message: "内容被安全策略截断",
+    lastEvent: "response.incomplete",
+  },
+]) {
+  test(`records HTTP 200 ${scenario.path} as an incomplete failure without retrying`, async () => {
+    const incomplete = await post("/api/providers", {
+      name: `Incomplete ${scenario.path}`,
+      base_url: `http://127.0.0.1:${mockPort}/${scenario.path}/v1`,
+    });
+    const routes = await get("/api/routes");
+    const group = routes.groups[0];
+    const originalMembers = group.members;
+    await put(`/api/route-groups/${group.id}`, {
+      ...group,
+      max_attempts: 2,
+      provider_retry_attempts: 2,
+      members: [{ provider_id: incomplete.id, priority: 1, weight: 100, enabled: true }],
+    });
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello", stream: true }),
+      });
+      const stream = await response.text();
+      assert.equal(response.status, 200);
+      assert.match(stream, /response\.incomplete/);
+
+      const record = (await get("/api/requests?limit=10"))[0];
+      const detail = await get(`/api/requests/${record.id}`);
+      assert.equal(detail.status, "failed");
+      assert.equal(detail.http_status, 200);
+      assert.equal(detail.error_category, scenario.category);
+      assert.match(detail.error_message, new RegExp(scenario.message));
+      assert.equal(detail.stream_phase, "incomplete");
+      assert.equal(detail.last_stream_event, scenario.lastEvent);
+      assert.equal(detail.attempt_count, 1);
+      assert.equal(detail.attempts[0].status, "failed");
+      assert.equal(detail.attempts[0].error_category, scenario.category);
+      assert.equal(detail.cost_status, "confirmed");
+    } finally {
+      await put(`/api/route-groups/${group.id}`, { ...group, members: originalMembers });
+      await send("DELETE", `/api/providers/${incomplete.id}`, {});
     }
   });
 }
