@@ -13,6 +13,7 @@ import {
   getRouterSettings,
   getStats,
   listProviders,
+  listRequestPage,
   listRequests,
   listRoutes,
   pruneExpiredDiagnostics,
@@ -286,6 +287,15 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/requests") {
+    if (url.searchParams.has("page")) {
+      return json(res, 200, listRequestPage(db, {
+        page: url.searchParams.get("page"),
+        page_size: url.searchParams.get("page_size"),
+        status: url.searchParams.get("status"),
+        provider_id: url.searchParams.get("provider_id"),
+        query: url.searchParams.get("query"),
+      }));
+    }
     return json(res, 200, listRequests(db, url.searchParams.get("limit")));
   }
   const requestMatch = url.pathname.match(/^\/api\/requests\/([^/]+)$/);

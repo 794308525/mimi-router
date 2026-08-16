@@ -986,6 +986,59 @@ export function listRequests(db, limit = 100) {
   `).all(Math.min(Math.max(Number(limit) || 100, 1), 500));
 }
 
+export function listRequestPage(db, input = {}) {
+  const pageSize = Math.min(Math.max(Number(input.page_size) || 50, 10), 100);
+  const requestedPage = Math.max(Number(input.page) || 1, 1);
+  const conditions = [];
+  const values = [];
+  const status = String(input.status || "all");
+  const providerId = String(input.provider_id || "all");
+  const query = String(input.query || "").trim();
+
+  if (status === "running") {
+    conditions.push("r.status IN ('received','routing','connecting','streaming')");
+  } else if (status !== "all") {
+    conditions.push("r.status = ?");
+    values.push(status);
+  }
+  if (providerId !== "all") {
+    conditions.push("r.final_provider_id = ?");
+    values.push(providerId);
+  }
+  if (query) {
+    conditions.push(`(
+      r.id LIKE ? OR r.requested_model LIKE ? OR r.upstream_model LIKE ?
+      OR r.actual_upstream_model LIKE ? OR r.reasoning_effort LIKE ? OR p.name LIKE ?
+    )`);
+    const pattern = `%${query}%`;
+    values.push(pattern, pattern, pattern, pattern, pattern, pattern);
+  }
+
+  const from = `
+    FROM requests r
+    LEFT JOIN providers p ON p.id = r.final_provider_id
+    LEFT JOIN route_groups rg ON rg.id = r.route_group_id
+    LEFT JOIN route_rules rr ON rr.id = r.route_rule_id
+    ${conditions.length ? `WHERE ${conditions.join(" AND ")}` : ""}
+  `;
+  const total = Number(db.prepare(`SELECT COUNT(*) AS count ${from}`).get(...values).count);
+  const totalPages = Math.ceil(total / pageSize);
+  const page = Math.min(requestedPage, Math.max(totalPages, 1));
+  const items = db.prepare(`
+    SELECT r.*, p.name AS provider_name, rg.name AS route_group_name, rr.name AS route_rule_name
+    ${from}
+    ORDER BY r.started_at DESC LIMIT ? OFFSET ?
+  `).all(...values, pageSize, (page - 1) * pageSize);
+
+  return {
+    items,
+    page,
+    page_size: pageSize,
+    total,
+    total_pages: totalPages,
+  };
+}
+
 export function getRequest(db, id) {
   const request = db.prepare(`
     SELECT r.*, p.name AS provider_name, rg.name AS route_group_name, rr.name AS route_rule_name

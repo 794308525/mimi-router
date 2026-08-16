@@ -5,6 +5,7 @@ import type {
   CodexStatus,
   PricingCatalog,
   Provider,
+  RequestPage,
   RequestRecord,
   RouteGroup,
   RouteRule,
@@ -47,7 +48,7 @@ export const api = {
   ),
   providerSecret: (id: string) => request<{ api_key: string }>(`/api/providers/${id}/secret`),
   resetCircuit: (id: string) => request<Provider>(`/api/providers/${id}/reset-circuit`, { method: "POST" }),
-  startBenchmark: (body: { route_group_id: string; model: string; attempts: number; timeout_seconds: number }) =>
+  startBenchmark: (body: { route_group_id: string; attempts: number; timeout_seconds: number }) =>
     request<BenchmarkRun>("/api/benchmarks", { method: "POST", body: JSON.stringify(body) }),
   benchmark: (id: string) => request<BenchmarkRun>(`/api/benchmarks/${id}`),
   cancelBenchmark: (id: string) => request<BenchmarkRun>(`/api/benchmarks/${id}/cancel`, { method: "POST" }),
@@ -66,6 +67,16 @@ export const api = {
     request<RouteRule>(`/api/route-rules/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteRule: (id: string) => request<{ ok: true }>(`/api/route-rules/${id}`, { method: "DELETE" }),
   requests: () => request<RequestRecord[]>("/api/requests?limit=300"),
+  requestPage: (input: { page: number; page_size: number; status: string; provider_id: string; query: string }) => {
+    const params = new URLSearchParams({
+      page: String(input.page),
+      page_size: String(input.page_size),
+      status: input.status,
+      provider_id: input.provider_id,
+      query: input.query,
+    });
+    return request<RequestPage>(`/api/requests?${params}`);
+  },
   requestDetail: (id: string) => request<RequestRecord>(`/api/requests/${id}`),
   cancelRequest: (id: string) => request<{ ok: boolean }>(`/api/requests/${id}/cancel`, { method: "POST" }),
   updateRouterSettings: (body: Partial<RouterSettings>) =>

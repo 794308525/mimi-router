@@ -37,6 +37,7 @@ before(async () => {
     name: "Primary failure",
     base_url: `http://127.0.0.1:${mockPort}/fail/v1`,
     default_model: "mock-model",
+    test_model: "gpt-5.6-sol",
     failure_threshold: 3,
     cooldown_ms: 500,
   });
@@ -117,6 +118,19 @@ test("reports storage usage and truncates only the SQLite cache", async () => {
   assert.ok(storageAfter.cleared_bytes >= 0);
   assert.equal(storageAfter.busy, false);
   assert.equal((await get("/api/requests?limit=100")).length, requestsBefore.length);
+});
+
+test("paginates and filters request records while preserving the legacy list response", async () => {
+  const legacy = await get("/api/requests?limit=10");
+  assert.ok(Array.isArray(legacy));
+  const providerId = legacy[0].final_provider_id;
+  const page = await get(`/api/requests?page=1&page_size=20&status=completed&provider_id=${providerId}&query=default`);
+  assert.equal(page.page, 1);
+  assert.equal(page.page_size, 20);
+  assert.ok(page.total >= 1);
+  assert.ok(page.total_pages >= 1);
+  assert.ok(page.items.every((request) => request.status === "completed"));
+  assert.ok(page.items.every((request) => request.final_provider_id === providerId));
 });
 
 test("serves the Codex model catalog without creating a usage record", async () => {
@@ -240,15 +254,15 @@ test("benchmarks enabled route members without writing requests or circuit healt
   const beforeFailures = new Map(beforeProviders.map((provider) => [provider.id, provider.consecutive_failures]));
   const started = await post("/api/benchmarks", {
     route_group_id: routes.groups[0].id,
-    model: "gpt-5.6-terra",
     attempts: 1,
   });
   const run = await waitForBenchmark(started.id);
   assert.equal(run.status, "completed");
-  assert.equal(run.model, "gpt-5.6-terra");
   assert.equal(run.providers.length, 2);
   const successful = run.providers.find((item) => item.provider_name === "Secondary success");
   const failing = run.providers.find((item) => item.provider_name === "Primary failure");
+  assert.equal(successful.test_model, "gpt-5.6-terra");
+  assert.equal(failing.test_model, "gpt-5.6-sol");
   assert.ok(successful.samples.every((sample) => sample.ok && sample.first_token_ms > 0));
   assert.equal(failing.samples.length, 3);
   assert.ok(failing.samples.every((sample) => !sample.ok));

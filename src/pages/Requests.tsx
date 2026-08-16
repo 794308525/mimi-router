@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { Ban, ChevronRight, Clock3, Filter, RefreshCcw, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Ban, ChevronLeft, ChevronRight, Clock3, Filter, RefreshCcw, Trash2 } from "lucide-react";
 import { api } from "../api";
 import type { Notice, Provider, RequestAttempt, RequestRecord } from "../types";
 import { ACTIVE_REQUEST_STATES } from "../types";
@@ -40,8 +40,56 @@ export function RequestsPage({
   const [status, setStatus] = useState("all");
   const [providerId, setProviderId] = useState("all");
   const [query, setQuery] = useState("");
+  const [appliedQuery, setAppliedQuery] = useState("");
+  const [records, setRecords] = useState(() => requests.slice(0, 50));
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const [total, setTotal] = useState(requests.length);
+  const [totalPages, setTotalPages] = useState(requests.length ? Math.ceil(requests.length / 50) : 0);
+  const [liveRefresh, setLiveRefresh] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [detail, setDetail] = useState<RequestRecord | null>(initialDetail);
   const [loadingDetail, setLoadingDetail] = useState(false);
+
+  const loadPage = useCallback(async () => {
+    setLoading(true);
+    try {
+      const result = await api.requestPage({
+        page,
+        page_size: pageSize,
+        status,
+        provider_id: providerId,
+        query: appliedQuery,
+      });
+      setRecords(result.items);
+      setPage(result.page);
+      setPageSize(result.page_size);
+      setTotal(result.total);
+      setTotalPages(result.total_pages);
+    } catch (error) {
+      setNotice({ type: "error", message: error instanceof Error ? error.message : "请求记录加载失败" });
+    } finally {
+      setLoading(false);
+    }
+  }, [appliedQuery, page, pageSize, providerId, setNotice, status]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setPage(1);
+      setAppliedQuery(query.trim());
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+
+  useEffect(() => {
+    void loadPage();
+  }, [loadPage]);
+
+  useEffect(() => {
+    if (!liveRefresh) return;
+    const timer = window.setTimeout(() => void loadPage(), 120);
+    return () => window.clearTimeout(timer);
+  }, [liveRefresh, loadPage, requests]);
 
   useEffect(() => {
     if (!initialDetail) return;
@@ -53,14 +101,7 @@ export function RequestsPage({
       .finally(() => setLoadingDetail(false));
   }, [initialDetail, setNotice]);
 
-  const filtered = useMemo(() => requests.filter((request) => {
-    if (status === "running" && !ACTIVE_REQUEST_STATES.has(request.status)) return false;
-    if (status !== "all" && status !== "running" && request.status !== status) return false;
-    if (providerId !== "all" && request.final_provider_id !== providerId) return false;
-    if (query && !`${request.id} ${request.requested_model} ${request.actual_upstream_model} ${request.reasoning_effort} ${request.provider_name || ""}`.toLowerCase().includes(query.toLowerCase())) return false;
-    return true;
-  }), [requests, status, providerId, query]);
-  const ttftBaselines = useMemo(() => buildTtftBaselines(requests), [requests]);
+  const ttftBaselines = useMemo(() => buildTtftBaselines(records), [records]);
 
   const openDetail = async (request: RequestRecord) => {
     setDetail(request);
@@ -91,7 +132,8 @@ export function RequestsPage({
   const clear = async () => {
     if (!window.confirm("确认清除所有已结束的请求记录？运行中的请求不会受影响。")) return;
     const result = await api.clearRequests();
-    await onRefresh();
+    setPage(1);
+    await Promise.all([onRefresh(), loadPage()]);
     setNotice({ type: "success", message: `已清除 ${result.deleted} 条请求记录` });
   };
 
@@ -101,7 +143,12 @@ export function RequestsPage({
         title="请求记录"
         actions={
           <>
-            <button className="button button-secondary" type="button" onClick={onRefresh}><RefreshCcw size={16} />刷新</button>
+            <label className="request-live-toggle" title="有请求状态变化时自动刷新当前页">
+              <input type="checkbox" checked={liveRefresh} onChange={(event) => setLiveRefresh(event.target.checked)} />
+              <span aria-hidden="true" />
+              <strong>实时刷新</strong>
+            </label>
+            <button className="button button-secondary" type="button" onClick={() => void loadPage()} disabled={loading}><RefreshCcw size={16} className={loading ? "spin" : undefined} />刷新</button>
             <button className="button button-danger-ghost" type="button" onClick={clear}><Trash2 size={16} />清理记录</button>
           </>
         }
@@ -109,7 +156,7 @@ export function RequestsPage({
 
       <section className="filters-bar">
         <Filter size={17} />
-        <select value={status} onChange={(event) => setStatus(event.target.value)}>
+        <select value={status} onChange={(event) => { setStatus(event.target.value); setPage(1); }}>
           <option value="all">全部状态</option>
           <option value="running">进行中</option>
           <option value="completed">成功</option>
@@ -118,15 +165,15 @@ export function RequestsPage({
           <option value="client_disconnected">客户端断开</option>
           <option value="interrupted">异常中断</option>
         </select>
-        <select value={providerId} onChange={(event) => setProviderId(event.target.value)}>
+        <select value={providerId} onChange={(event) => { setProviderId(event.target.value); setPage(1); }}>
           <option value="all">全部中转</option>
           {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
         </select>
         <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索请求 ID、模型或中转" />
-        <span>{filtered.length} 条记录</span>
+        <span>共 {total} 条</span>
       </section>
 
-      {filtered.length === 0 ? (
+      {records.length === 0 ? (
         <EmptyState title="没有匹配的请求" description="请求发起后会自动显示，无需手动刷新。" />
       ) : (
         <section className="table-shell request-table-shell">
@@ -145,7 +192,7 @@ export function RequestsPage({
             </colgroup>
             <thead><tr><th>状态</th><th>开始时间</th><th>模型</th><th>中转</th><th>耗时</th><th>首字</th><th>Token</th><th>消耗金额</th><th>尝试</th><th /></tr></thead>
             <tbody>
-              {filtered.map((request) => {
+              {records.map((request) => {
                 const running = ACTIVE_REQUEST_STATES.has(request.status);
                 const firstToken = firstTokenDisplay(request, ttftBaselines.get(ttftBaselineKey(request)));
                 return (
@@ -167,6 +214,18 @@ export function RequestsPage({
           </table>
         </section>
       )}
+
+      <nav className="request-pagination" aria-label="请求记录分页">
+        <span>每页</span>
+        <select value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1); }}>
+          <option value={20}>20</option>
+          <option value={50}>50</option>
+          <option value={100}>100</option>
+        </select>
+        <button className="icon-button" type="button" title="上一页" onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={page <= 1 || loading}><ChevronLeft size={17} /></button>
+        <strong>第 {totalPages ? page : 0} / {totalPages} 页</strong>
+        <button className="icon-button" type="button" title="下一页" onClick={() => setPage((current) => Math.min(totalPages, current + 1))} disabled={page >= totalPages || loading}><ChevronRight size={17} /></button>
+      </nav>
 
       {detail && (
         <Modal title="请求详情" description={`ID ${detail.id}`} onClose={closeDetail} wide>

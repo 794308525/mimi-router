@@ -2,6 +2,12 @@
 
 This project follows semantic versioning. Every feature update must keep the application version and both language variants of the release notes in sync.
 
+## 0.2.15 - 2026-08-16
+
+- Added server-side pagination, status and provider filters, and live refresh enabled by default for request records.
+- Provider editing now selects a test model from the synchronized system catalog, with `gpt-5.6-terra` as the default for new providers.
+- Provider benchmarks now use each provider's configured test model and show the actual model in benchmark results.
+
 ## 0.2.14 - 2026-08-16
 
 - Added startup update checks and manual checks on the About page, with release details, download progress, and restart-to-install support.

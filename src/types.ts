@@ -67,6 +67,7 @@ export type BenchmarkSample = {
 export type BenchmarkProviderResult = {
   provider_id: string;
   provider_name: string;
+  test_model: string;
   cost_multiplier: number;
   current_priority: number;
   samples: BenchmarkSample[];
@@ -78,7 +79,6 @@ export type BenchmarkRun = {
   route_group_id: string;
   route_group_name: string;
   route_member_ids: string[];
-  model: string;
   attempts: number;
   timeout_seconds: number;
   total_samples: number;
@@ -219,6 +219,14 @@ export type RequestRecord = {
   route_group_name: string | null;
   route_rule_name: string | null;
   attempts?: RequestAttempt[];
+};
+
+export type RequestPage = {
+  items: RequestRecord[];
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
 };
 
 export type StatsSummary = {

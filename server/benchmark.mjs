@@ -5,7 +5,6 @@ import {
   listRoutes,
 } from "./db.mjs";
 import { getSecret } from "./secrets.mjs";
-import { DEFAULT_TEST_MODEL } from "./constants.mjs";
 
 const MAX_RUNS = 20;
 const PROVIDER_CONCURRENCY = 4;
@@ -24,8 +23,6 @@ export class BenchmarkService {
     const routes = listRoutes(this.db);
     const group = routes.groups.find((item) => item.id === String(input.route_group_id || ""));
     if (!group) throw new Error("请选择有效的路由组");
-    const model = String(input.model || DEFAULT_TEST_MODEL).trim();
-    if (!model) throw new Error("测评模型不能为空");
     const attempts = clampInteger(input.attempts, 3, 1, 10);
     const timeoutSeconds = clampInteger(input.timeout_seconds, DEFAULT_SAMPLE_TIMEOUT_SECONDS, 1, 300);
     const providers = group.members
@@ -35,6 +32,7 @@ export class BenchmarkService {
         return provider ? {
           provider_id: provider.id,
           provider_name: provider.name,
+          test_model: provider.test_model,
           cost_multiplier: Number(provider.cost_multiplier ?? 1),
           current_priority: member.priority,
           samples: [],
@@ -50,7 +48,6 @@ export class BenchmarkService {
       route_group_id: group.id,
       route_group_name: group.name,
       route_member_ids: group.members.map((member) => member.provider_id),
-      model,
       attempts,
       timeout_seconds: timeoutSeconds,
       total_samples: providers.length * attempts,
@@ -153,7 +150,7 @@ export class BenchmarkService {
     const sample = await benchmarkProvider({
       provider,
       secret: getSecret(this.dataDir, provider.id),
-      model: run.model,
+      model: provider.test_model,
       signal: run.controller.signal,
       timeoutMs: run.timeout_seconds * 1000,
     });

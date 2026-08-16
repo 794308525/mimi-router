@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, Gauge, Play, RefreshCcw, Square } from "lucide-react";
 import { api, subscribeEvents } from "../api";
 import { BENCHMARK_MODES, scoreBenchmark, type BenchmarkMode } from "../benchmark";
-import { DEFAULT_TEST_MODEL } from "../types";
 import type { BenchmarkRun, BenchmarkWeights, Notice, RouteGroup } from "../types";
 import { formatDuration, Modal } from "./Common";
 
@@ -24,7 +23,6 @@ export function BenchmarkDialog({
 }) {
   const initial = readLastSettings();
   const [groupId, setGroupId] = useState(initial.route_group_id || groups[0]?.id || "");
-  const [model, setModel] = useState(initial.model || DEFAULT_TEST_MODEL);
   const [attempts, setAttempts] = useState(initial.attempts || 3);
   const [timeoutSeconds, setTimeoutSeconds] = useState(initial.timeout_seconds || 30);
   const [targetSeconds, setTargetSeconds] = useState(initial.target_seconds || 5);
@@ -52,14 +50,13 @@ export function BenchmarkDialog({
   useEffect(() => {
     localStorage.setItem(LAST_SETTINGS_KEY, JSON.stringify({
       route_group_id: groupId,
-      model: model.trim(),
       attempts,
       timeout_seconds: timeoutSeconds,
       target_seconds: targetSeconds,
       mode,
       weights,
     }));
-  }, [groupId, model, attempts, timeoutSeconds, targetSeconds, mode, weights]);
+  }, [groupId, attempts, timeoutSeconds, targetSeconds, mode, weights]);
 
   const scored = useMemo(
     () => run ? scoreBenchmark(run, weights, targetSeconds * 1000) : [],
@@ -85,7 +82,6 @@ export function BenchmarkDialog({
     try {
       const created = await api.startBenchmark({
         route_group_id: groupId,
-        model: model.trim(),
         attempts,
         timeout_seconds: timeoutSeconds,
       });
@@ -135,7 +131,7 @@ export function BenchmarkDialog({
           {simple
             ? <label>测评范围<input value="当前启用中转" disabled readOnly /></label>
             : <label>路由组<select value={groupId} onChange={(event) => setGroupId(event.target.value)} disabled={Boolean(running)}>{groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label>}
-          <label>测评模型<input value={model} onChange={(event) => setModel(event.target.value)} disabled={Boolean(running)} /></label>
+          <label>测评模型<input value="按各渠道配置" disabled readOnly /></label>
           <label>基础次数<input type="number" min="1" max="10" value={attempts} onChange={(event) => setAttempts(clamp(Number(event.target.value), 1, 10))} disabled={Boolean(running)} /></label>
           <label>单次超时（秒）<input type="number" min="1" max="300" value={timeoutSeconds} onChange={(event) => setTimeoutSeconds(clamp(Number(event.target.value), 1, 300))} disabled={Boolean(running)} /></label>
           <label>达标首字（秒）<input type="number" min="1" max="60" value={targetSeconds} onChange={(event) => setTargetSeconds(clamp(Number(event.target.value), 1, 60))} /></label>
@@ -170,7 +166,7 @@ export function BenchmarkDialog({
                     return (
                       <tr key={item.provider_id} title={lastError || undefined}>
                         <td><strong className="benchmark-rank">{index + 1}</strong></td>
-                        <td><strong>{item.provider_name}</strong>{lastError && <small className="benchmark-error">{lastError}</small>}</td>
+                        <td><strong>{item.provider_name}</strong><small className="benchmark-model">{item.test_model}</small>{lastError && <small className="benchmark-error">{lastError}</small>}</td>
                         <td>{item.successful_samples}/{item.samples.length || run.attempts}</td>
                         <td>{formatDuration(item.average_first_token_ms)}</td>
                         <td>{formatMultiplier(item.cost_multiplier)}</td>
@@ -196,7 +192,7 @@ export function BenchmarkDialog({
           {running ? (
             <button className="button button-danger-ghost" type="button" onClick={() => void cancel()} disabled={run?.status === "cancelling"}><Square size={14} />{run?.status === "cancelling" ? "取消中" : "取消测评"}</button>
           ) : (
-            <button className="button button-secondary" type="button" onClick={() => void start()} disabled={starting || !groupId || !model.trim()}>{starting ? <RefreshCcw size={15} className="spin" /> : <Play size={15} />}{run ? "重新测评" : "开始测评"}</button>
+            <button className="button button-secondary" type="button" onClick={() => void start()} disabled={starting || !groupId}>{starting ? <RefreshCcw size={15} className="spin" /> : <Play size={15} />}{run ? "重新测评" : "开始测评"}</button>
           )}
           {run && <button className="button button-primary" type="button" onClick={() => void apply()} disabled={run.status !== "completed" || applying}><Check size={15} />{applying ? "采纳中" : "采纳排序"}</button>}
         </div>
@@ -217,7 +213,6 @@ function runStatus(status: BenchmarkRun["status"]) {
 
 function readLastSettings(): Partial<{
   route_group_id: string;
-  model: string;
   attempts: number;
   timeout_seconds: number;
   target_seconds: number;

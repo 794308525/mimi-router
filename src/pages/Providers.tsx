@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { CircleGauge, Eye, EyeOff, Gauge, GripVertical, KeyRound, MoreHorizontal, Plus, RefreshCcw, Save, Server, Trash2 } from "lucide-react";
 import { api } from "../api";
-import type { Notice, Provider, RouteGroup, Stats } from "../types";
+import type { Notice, OfficialPricing, Provider, RouteGroup, Stats } from "../types";
 import { DEFAULT_TEST_MODEL } from "../types";
 import { EmptyState, ExternalLink, Modal, PageHeader, ProviderStatus, formatCacheHitRate, formatDuration, formatTime, formatUsd } from "../components/Common";
 import { BenchmarkDialog } from "../components/BenchmarkDialog";
@@ -43,12 +43,14 @@ export function ProvidersPage({
   providers,
   groups,
   stats,
+  pricingModels,
   onRefresh,
   setNotice,
 }: {
   providers: Provider[];
   groups: RouteGroup[];
   stats: Stats;
+  pricingModels: OfficialPricing[];
   onRefresh: () => Promise<void>;
   setNotice: (notice: Notice) => void;
 }) {
@@ -94,6 +96,12 @@ export function ProvidersPage({
     () => new Map((stats.provider_periods[statsRange] ?? []).map((item) => [item.name, item])),
     [stats.provider_periods, statsRange],
   );
+  const testModels = useMemo(() => {
+    const models = [DEFAULT_TEST_MODEL, form.test_model, ...pricingModels.map((item) => item.model)]
+      .map((model) => model.trim())
+      .filter(Boolean);
+    return [...new Set(models)];
+  }, [form.test_model, pricingModels]);
 
   useEffect(() => {
     if (!primaryGroup) return;
@@ -567,7 +575,7 @@ export function ProvidersPage({
             <label>中转名称<input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="例如：主线路" /></label>
             <div className="form-grid three-columns">
               <label>Base URL<input required value={form.base_url} onChange={(event) => setForm({ ...form, base_url: event.target.value })} placeholder="https://example.com/v1" /></label>
-              <label>测试模型（固定流式检测）<input required value={form.test_model} onChange={(event) => setForm({ ...form, test_model: event.target.value })} placeholder={DEFAULT_TEST_MODEL} /></label>
+              <label>测试模型（固定流式检测）<select required value={form.test_model} onChange={(event) => setForm({ ...form, test_model: event.target.value })}>{testModels.map((model) => <option key={model} value={model}>{model}</option>)}</select></label>
               <label>测评倍率<input type="number" min="0" step="0.01" required value={form.cost_multiplier} onChange={(event) => setForm({ ...form, cost_multiplier: Number(event.target.value) })} /></label>
             </div>
             <p className="form-hint">测评倍率只参与中转测评排序，不影响消耗金额。</p>

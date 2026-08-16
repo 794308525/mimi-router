@@ -1,6 +1,22 @@
 {
-  "currentVersion": "0.2.14",
+  "currentVersion": "0.2.15",
   "releases": [
+    {
+      "version": "0.2.15",
+      "date": "2026-08-16",
+      "notes": {
+        "zh-CN": [
+          "请求记录新增服务端分页、状态与渠道筛选，并支持默认开启的实时刷新。",
+          "编辑渠道时可从系统已同步的模型列表选择测试模型，新渠道默认使用 gpt-5.6-terra。",
+          "中转测评改为按每个渠道各自配置的模型执行，并在测评结果中显示实际测试模型。"
+        ],
+        "en": [
+          "Added server-side pagination, status and provider filters, and live refresh enabled by default for request records.",
+          "Provider editing now selects a test model from the synchronized system catalog, with gpt-5.6-terra as the default for new providers.",
+          "Provider benchmarks now use each provider's configured test model and show the actual model in benchmark results."
+        ]
+      }
+    },
     {
       "version": "0.2.14",
       "date": "2026-08-16",
