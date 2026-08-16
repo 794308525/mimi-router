@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowRight, Ban, Check, CircleHelp, Clock3, Copy, RotateCcw, Route } from "lucide-react";
+import { ArrowRight, Ban, Check, CircleHelp, Clock3, Copy, Eye, EyeOff, RotateCcw, Route } from "lucide-react";
 import { api } from "../api";
 import type { Notice, Provider, RequestRecord, RouteGroup, RouterSettings, ServiceInfo, Stats } from "../types";
 import { ACTIVE_REQUEST_STATES } from "../types";
@@ -8,19 +8,22 @@ import {
   EmptyState,
   ElapsedTime,
   Modal,
+  ModelRuntime,
   ProviderStatus,
   RequestFailureReason,
   RequestStatus,
   TokenStack,
+  cacheHitRate,
+  formatCacheHitRate,
   formatDuration,
   formatRequestCost,
   formatTime,
   formatTokens,
   formatUsd,
-  reasoningEffortLabel,
 } from "../components/Common";
 
 const PROVIDER_NAMES_VISIBLE_KEY = "mimi-router.provider-names-visible";
+type ProviderSortMode = "priority" | "cost" | "speed" | "cache";
 
 export function Overview({
   service,
@@ -43,9 +46,9 @@ export function Overview({
   onOpenRequest: (request: RequestRecord) => void;
   setNotice: (notice: Notice) => void;
 }) {
-  const [trendRange, setTrendRange] = useState<"today" | "yesterday" | "7d">("today");
-  const [trendMetric, setTrendMetric] = useState<TrendMetric>("tokens");
+  const [visibleTrendMetrics, setVisibleTrendMetrics] = useState<TrendMetric[]>(() => TREND_METRICS.map(([metric]) => metric));
   const [summaryRange, setSummaryRange] = useState<"today" | "yesterday" | "seven_days">("today");
+  const [providerSortMode, setProviderSortMode] = useState<ProviderSortMode>("priority");
   const [providerNamesVisible, setProviderNamesVisible] = useState(readProviderNamesVisible);
   const [hoveredTrend, setHoveredTrend] = useState<number | null>(null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
@@ -84,30 +87,54 @@ export function Overview({
   }, [setNotice]);
   const active = requests.filter((request) => ACTIVE_REQUEST_STATES.has(request.status));
   const summary = stats.periods?.[summaryRange] ?? stats.summary;
+  const trendRange = summaryRange === "seven_days" ? "7d" : summaryRange;
+  const providerUsage = stats.provider_periods[summaryRange] ?? [];
   const measuredTotal = Math.max(0, summary.upstream_requests - (summary.client_disconnected || 0) - (summary.cancelled || 0));
   const successRate = measuredTotal
     ? Math.round((summary.completed / measuredTotal) * 100)
     : 0;
-  const healthy = providers.filter((provider) => provider.health_status === "healthy" && provider.circuit_state === "closed").length;
+  const providerStatusCounts = providers.reduce((counts, provider) => {
+    if (!provider.enabled) counts.disabled += 1;
+    else if (provider.circuit_state === "open") counts.open += 1;
+    else if (provider.circuit_state === "half_open" || provider.health_status !== "healthy") counts.observing += 1;
+    else counts.normal += 1;
+    return counts;
+  }, { normal: 0, open: 0, observing: 0, disabled: 0 });
+  const healthy = providerStatusCounts.normal;
   const orderedProviders = useMemo(() => {
     const priorities = new Map(routeGroup?.members.map((member) => [member.provider_id, member.priority]) ?? []);
     return [...providers].sort((left, right) =>
       (priorities.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (priorities.get(right.id) ?? Number.MAX_SAFE_INTEGER)
       || left.name.localeCompare(right.name, "zh-CN"));
   }, [providers, routeGroup]);
-  const providerAliases = useMemo(() => {
-    const names = [...orderedProviders.map((provider) => provider.name), ...requests.map((request) => request.provider_name)];
-    const aliases = new Map<string, string>();
-    for (const name of names) {
-      if (name && !aliases.has(name)) aliases.set(name, `中转 ${aliases.size + 1}`);
-    }
-    return aliases;
-  }, [orderedProviders, requests]);
+  const displayedProviders = useMemo(() => {
+    if (providerSortMode === "priority") return orderedProviders;
+    const usageByName = new Map(providerUsage.map((usage) => [usage.name, usage]));
+    const priority = new Map(orderedProviders.map((provider, index) => [provider.id, index]));
+    return [...orderedProviders].sort((left, right) => {
+      const leftUsage = usageByName.get(left.name);
+      const rightUsage = usageByName.get(right.name);
+      if (providerSortMode === "cost") {
+        const difference = (rightUsage?.estimated_cost_usd ?? 0) - (leftUsage?.estimated_cost_usd ?? 0);
+        return difference || (priority.get(left.id) ?? 0) - (priority.get(right.id) ?? 0);
+      }
+      if (providerSortMode === "cache") {
+        const leftRate = leftUsage ? cacheHitRate(leftUsage.cache_input_tokens, leftUsage.cached_tokens) : null;
+        const rightRate = rightUsage ? cacheHitRate(rightUsage.cache_input_tokens, rightUsage.cached_tokens) : null;
+        return (rightRate ?? Number.NEGATIVE_INFINITY) - (leftRate ?? Number.NEGATIVE_INFINITY)
+          || (priority.get(left.id) ?? 0) - (priority.get(right.id) ?? 0);
+      }
+      const leftTtft = leftUsage?.avg_ttft_ms ?? Number.POSITIVE_INFINITY;
+      const rightTtft = rightUsage?.avg_ttft_ms ?? Number.POSITIVE_INFINITY;
+      return leftTtft - rightTtft || (priority.get(left.id) ?? 0) - (priority.get(right.id) ?? 0);
+    });
+  }, [orderedProviders, providerSortMode, providerUsage]);
   const activeRouteNames = orderedProviders.filter((provider) => provider.enabled).map((provider) => provider.name);
-  const displayedRouteNames = activeRouteNames.map((name) => displayProviderName(name, providerNamesVisible, providerAliases));
-  const routeSummary = displayedRouteNames.length
-    ? `${displayedRouteNames.slice(0, 3).join(" → ")}${displayedRouteNames.length > 3 ? ` +${displayedRouteNames.length - 3}` : ""}`
-    : "暂无可用中转";
+  const routeSummary = !providerNamesVisible
+    ? "已隐藏"
+    : activeRouteNames.length
+      ? `${activeRouteNames.slice(0, 3).join(" → ")}${activeRouteNames.length > 3 ? ` +${activeRouteNames.length - 3}` : ""}`
+      : "暂无可用中转";
   const totalTokens = summary.input_tokens + summary.output_tokens;
   const dailySeries = buildDailySeries(stats.daily);
   const todayHourlySeries = buildCalendarHourlySeries(stats.hourly_periods?.today ?? stats.hourly ?? [], 0);
@@ -121,28 +148,50 @@ export function Overview({
       label: item.day.slice(5),
       requests: item.requests,
       tokens: item.tokens,
+      cachedTokens: item.cached_tokens,
+      cacheInputTokens: item.cache_input_tokens,
       estimatedCost: item.estimated_cost_usd,
       avgTtftMs: item.avg_ttft_ms,
       errors: item.errors,
       }));
-  const maxTrendValue = Math.max(1, ...trendSeries.map((item) => trendMetricValue(item, trendMetric)));
   const chart = { width: 720, height: 196, left: 52, right: 14, top: 14, bottom: 31 };
   const plotWidth = chart.width - chart.left - chart.right;
   const plotHeight = chart.height - chart.top - chart.bottom;
   const trendPoints = trendSeries.map((item, index) => ({
     ...item,
     x: chart.left + (index / Math.max(1, trendSeries.length - 1)) * plotWidth,
-    y: chart.top + plotHeight - (trendMetricValue(item, trendMetric) / maxTrendValue) * plotHeight,
   }));
-  const linePath = trendPoints.map((point, index) => `${index ? "L" : "M"} ${point.x} ${point.y}`).join(" ");
-  const areaPath = trendPoints.length
-    ? `M ${trendPoints[0].x} ${chart.top + plotHeight} ${trendPoints.map((point) => `L ${point.x} ${point.y}`).join(" ")} L ${trendPoints.at(-1)?.x} ${chart.top + plotHeight} Z`
-    : "";
+  const trendMetricMaxima = Object.fromEntries(TREND_METRICS.map(([metric]) => [
+    metric,
+    metric === "cache_rate" ? 100 : Math.max(1, ...trendSeries.map((item) => trendMetricValue(item, metric))),
+  ])) as Record<TrendMetric, number>;
+  const trendLines = visibleTrendMetrics.map((metric) => {
+    const points = trendPoints.map((point) => {
+      const y = chart.top + plotHeight - (trendMetricValue(point, metric) / trendMetricMaxima[metric]) * plotHeight;
+      return { x: point.x, y };
+    });
+    return {
+      metric,
+      path: buildSmoothTrendPath(points, chart.top, chart.top + plotHeight),
+    };
+  });
   const hoveredPoint = hoveredTrend == null ? null : trendPoints[hoveredTrend];
-  const providerUsage = stats.provider_periods[summaryRange];
-  const providerRangeLabel = summaryRange === "today" ? "今日" : summaryRange === "yesterday" ? "昨日" : "近 7 日";
+  const hoveredMetricPoints = hoveredPoint
+    ? visibleTrendMetrics.map((metric) => ({
+      metric,
+      y: chart.top + plotHeight - (trendMetricValue(hoveredPoint, metric) / trendMetricMaxima[metric]) * plotHeight,
+    }))
+    : [];
+  const hoveredAnchorY = hoveredMetricPoints.length
+    ? Math.min(...hoveredMetricPoints.map((point) => point.y))
+    : chart.top + plotHeight / 2;
   const recentUsage = requests.slice(0, 20);
   const ttftBaselines = useMemo(() => buildTtftBaselines(requests), [requests]);
+  const adaptivePreview = routerSettings.adaptive_first_token_preview;
+  const adaptiveTimeoutSeconds = Number(((adaptivePreview?.timeout_ms ?? routerSettings.first_token_timeout_ms) / 1000).toFixed(1));
+  const adaptiveTimeoutTitle = !adaptivePreview || adaptivePreview.source === "fallback"
+    ? "同渠道同模型成功样本不足，当前使用已保存的指定时限"
+    : `基于${adaptivePreview?.source === "24h" ? "近 24 小时" : "近 7 天"}${adaptivePreview?.sample_count ?? 0} 条同渠道同模型成功记录；实际阈值会随渠道和模型变化`;
 
   const cancelRequest = async (request: RequestRecord) => {
     setCancellingId(request.id);
@@ -282,33 +331,14 @@ export function Overview({
         </div>
       </section>
 
-      <div className="overview-primary-grid">
-        <section className="panel usage-summary-card">
+      <div className="overview-content-grid">
+        <div className="overview-main-stack">
+        <section className="panel overview-summary-card">
+          <div className="usage-summary-card">
           <header>
             <div><span>使用概览</span></div>
-            <div className="summary-range-tabs">
-              <button type="button" className={summaryRange === "today" ? "active" : ""} onClick={() => setSummaryRange("today")}>今日</button>
-              <button type="button" className={summaryRange === "yesterday" ? "active" : ""} onClick={() => setSummaryRange("yesterday")}>昨日</button>
-              <button type="button" className={summaryRange === "seven_days" ? "active" : ""} onClick={() => setSummaryRange("seven_days")}>7 日</button>
-            </div>
-          </header>
-          <div className="usage-summary-body">
-            <div className="usage-summary-lead"><span>本地请求</span><strong>{summary.total}</strong><small title="上游调用包含自动重试和故障切换">{summary.upstream_calls} 次上游 · {successRate}% 成功率</small></div>
-            <div className="usage-summary-kpi"><span>总 Token</span><strong>{formatTokens(totalTokens)}</strong><small>{formatTokens(summary.input_tokens)} 输入</small></div>
-            <div className="usage-summary-kpi cost"><span>消耗金额</span><strong>{formatUsd(summary.estimated_cost_usd)}</strong><small>{summary.unknown_cost ? `${summary.unknown_cost} 条费用未知` : summary.partial_cost ? `${summary.partial_cost} 条部分用量` : "已确认用量"}</small></div>
-          </div>
-          <footer>
-            <span>平均响应<strong>{formatDuration(summary.avg_duration_ms)}</strong></span>
-            <span>平均首字<strong>{formatDuration(summary.avg_ttft_ms)}</strong></span>
-            <span>输入 Token<strong>{formatTokens(summary.input_tokens)}</strong></span>
-            <span>输出 Token<strong>{formatTokens(summary.output_tokens)}</strong></span>
-          </footer>
-        </section>
-
-        <section className="panel live-overview-card">
-          <header>
             <div className="first-token-control">
-              <span>首字超时</span>
+              <span>切慢首字</span>
               <button
                 className="first-token-help"
                 type="button"
@@ -340,25 +370,37 @@ export function Overview({
                   </button>
                 ))}
               </div>
-              <label className="first-token-seconds" title={firstTokenPolicy === "fixed" ? "指定首字超时时间" : "选择指定时限后可修改"}>
-                <input
-                  type="number"
-                  min="1"
-                  max="600"
-                  value={firstTokenSeconds}
-                  disabled={firstTokenPolicy !== "fixed" || savingFirstToken}
-                  onChange={(event) => setFirstTokenSeconds(event.target.value)}
-                  onBlur={() => {
-                    const seconds = Math.min(600, Math.max(1, Math.round(Number(firstTokenSeconds) || 30)));
-                    setFirstTokenSeconds(String(seconds));
-                    if (seconds * 1000 !== routerSettings.first_token_timeout_ms) {
-                      void saveFirstTokenSettings({ first_token_timeout_ms: seconds * 1000 });
-                    }
-                  }}
-                  onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }}
-                  aria-label="首字超时秒数"
-                />
-                <em>秒</em>
+              <label
+                className={`first-token-seconds ${firstTokenPolicy === "adaptive" ? "is-adaptive" : ""}`}
+                title={firstTokenPolicy === "fixed" ? "指定首字超时时间" : firstTokenPolicy === "adaptive" ? adaptiveTimeoutTitle : "选择指定时限后可修改"}
+              >
+                {firstTokenPolicy === "adaptive" ? (
+                  <>
+                    <span className="first-token-adaptive-mark" aria-label={`自动均衡参考时限 ${adaptiveTimeoutSeconds} 秒`}>~{adaptiveTimeoutSeconds}</span>
+                    <em>秒</em>
+                  </>
+                ) : (
+                  <>
+                    <input
+                      type="number"
+                      min="1"
+                      max="600"
+                      value={firstTokenSeconds}
+                      disabled={firstTokenPolicy !== "fixed" || savingFirstToken}
+                      onChange={(event) => setFirstTokenSeconds(event.target.value)}
+                      onBlur={() => {
+                        const seconds = Math.min(600, Math.max(1, Math.round(Number(firstTokenSeconds) || 30)));
+                        setFirstTokenSeconds(String(seconds));
+                        if (seconds * 1000 !== routerSettings.first_token_timeout_ms) {
+                          void saveFirstTokenSettings({ first_token_timeout_ms: seconds * 1000 });
+                        }
+                      }}
+                      onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }}
+                      aria-label="首字超时秒数"
+                    />
+                    <em>秒</em>
+                  </>
+                )}
               </label>
               <div
                 className="first-token-mode-tabs"
@@ -391,114 +433,170 @@ export function Overview({
                 ))}
               </div>
             </div>
-          </header>
-          <div className="live-overview-body">
-            <div className="live-request-count"><strong>{active.length}</strong><span>个请求进行中</span></div>
-            <div className="live-overview-stats">
-              <div><span>健康中转</span><strong>{healthy}/{providers.length}</strong></div>
-              <div><span>完成请求</span><strong>{stats.summary.completed || 0}</strong></div>
-              <div><span>失败请求</span><strong>{stats.summary.failed || 0}</strong></div>
-              <div><span>故障转移</span><strong>{stats.summary.failovers || 0}</strong></div>
+            <div className="summary-range-tabs">
+              <button type="button" className={summaryRange === "today" ? "active" : ""} onClick={() => { setSummaryRange("today"); setHoveredTrend(null); }}>今日</button>
+              <button type="button" className={summaryRange === "yesterday" ? "active" : ""} onClick={() => { setSummaryRange("yesterday"); setHoveredTrend(null); }}>昨日</button>
+              <button type="button" className={summaryRange === "seven_days" ? "active" : ""} onClick={() => { setSummaryRange("seven_days"); setHoveredTrend(null); }}>7 日</button>
             </div>
+          </header>
+          <div className="usage-summary-body">
+            <div className="usage-summary-live"><span>实时请求</span><strong>{active.length}</strong><small>个请求进行中</small></div>
+            <div className="usage-summary-lead"><span>本地请求</span><strong>{summary.total}</strong><small title="上游调用包含自动重试和故障切换">{summary.upstream_calls} 次上游 · {successRate}% 成功率</small></div>
+            <div className="usage-summary-kpi"><span>总 Token</span><strong>{formatTokens(totalTokens)}</strong><small>{formatTokens(summary.input_tokens)} 输入</small></div>
+            <div className="usage-summary-kpi cost"><span>消耗金额</span><strong>{formatUsd(summary.estimated_cost_usd)}</strong><small>{summary.unknown_cost ? `${summary.unknown_cost} 条费用未知` : summary.partial_cost ? `${summary.partial_cost} 条部分用量` : "已确认用量"}</small></div>
+          </div>
+          <footer>
+            <span>平均响应<strong>{formatDuration(summary.avg_duration_ms)}</strong></span>
+            <span>平均首字<strong>{formatDuration(summary.avg_ttft_ms)}</strong></span>
+            <span>缓存命中<strong>{formatCacheHitRate(summary.cache_input_tokens, summary.cached_tokens)}</strong></span>
+            <span>输出 Token<strong>{formatTokens(summary.output_tokens)}</strong></span>
+            <span>健康中转<strong>{healthy}/{providers.length}</strong></span>
+            <span>完成请求<strong>{stats.summary.completed || 0}</strong></span>
+            <span>失败请求<strong>{stats.summary.failed || 0}</strong></span>
+            <span>故障转移<strong>{stats.summary.failovers || 0}</strong></span>
+          </footer>
           </div>
         </section>
-      </div>
 
-      <div className="overview-content-grid">
         <section className="panel overview-trend-panel">
           <header className="section-heading trend-heading">
             <div><h2>用量趋势</h2></div>
             <div className="trend-controls">
               <div className="trend-metric-tabs" role="group" aria-label="趋势指标">
-                {TREND_METRICS.map(([metric, label]) => (
-                  <button key={metric} type="button" className={trendMetric === metric ? "active" : ""} onClick={() => { setTrendMetric(metric); setHoveredTrend(null); }}>{label}</button>
-                ))}
-              </div>
-              <div className="trend-range-tabs">
-                <button type="button" className={trendRange === "today" ? "active" : ""} onClick={() => { setTrendRange("today"); setHoveredTrend(null); }}>今日</button>
-                <button type="button" className={trendRange === "yesterday" ? "active" : ""} onClick={() => { setTrendRange("yesterday"); setHoveredTrend(null); }}>昨日</button>
-                <button type="button" className={trendRange === "7d" ? "active" : ""} onClick={() => { setTrendRange("7d"); setHoveredTrend(null); }}>7 天</button>
+                {TREND_METRICS.map(([metric, label]) => {
+                  const active = visibleTrendMetrics.includes(metric);
+                  const isLastVisible = active && visibleTrendMetrics.length === 1;
+                  return (
+                    <button
+                      key={metric}
+                      type="button"
+                      className={active ? "active" : ""}
+                      aria-pressed={active}
+                      title={isLastVisible ? "至少保留一个指标" : active ? `隐藏${label}` : `显示${label}`}
+                      onClick={() => {
+                        if (isLastVisible) return;
+                        setVisibleTrendMetrics((current) => active
+                          ? current.filter((item) => item !== metric)
+                          : TREND_METRICS.map(([item]) => item).filter((item) => item === metric || current.includes(item)));
+                      }}
+                    >
+                      <span className="trend-legend-dot" style={{ backgroundColor: TREND_COLORS[metric] }} />
+                      {label}
+                    </button>
+                  );
+                })}
               </div>
             </div>
           </header>
-          <div className="trend-plot" data-metric={trendMetric} onMouseLeave={() => setHoveredTrend(null)}>
-            <svg viewBox={`0 0 ${chart.width} ${chart.height}`} role="img" aria-label={`${trendRange === "today" ? "今日" : trendRange === "yesterday" ? "昨日" : "7 天"}${trendMetricLabel(trendMetric)}趋势图`}>
-              <defs>
-                <linearGradient id="overview-trend-fill" x1="0" y1="0" x2="0" y2="1">
-                  <stop className="trend-gradient-start" offset="0%" />
-                  <stop className="trend-gradient-end" offset="100%" />
-                </linearGradient>
-              </defs>
+          <div className="trend-plot" onMouseLeave={() => setHoveredTrend(null)}>
+            <svg viewBox={`0 0 ${chart.width} ${chart.height}`} role="img" aria-label={`${trendRange === "today" ? "今日" : trendRange === "yesterday" ? "昨日" : "7 天"}多指标用量趋势图`}>
               {[1, 0.5, 0].map((ratio) => {
                 const y = chart.top + (1 - ratio) * plotHeight;
-                return <g key={ratio}><line className="trend-grid-line" x1={chart.left} x2={chart.width - chart.right} y1={y} y2={y} /><text className="trend-axis-label" x={chart.left - 9} y={y + 3} textAnchor="end">{formatTrendMetric(maxTrendValue * ratio, trendMetric)}</text></g>;
+                return <g key={ratio}><line className="trend-grid-line" x1={chart.left} x2={chart.width - chart.right} y1={y} y2={y} /><text className="trend-axis-label" x={chart.left - 9} y={y + 3} textAnchor="end">{Math.round(ratio * 100)}%</text></g>;
               })}
-              <path className="trend-area" d={areaPath} />
-              <path className="trend-line" d={linePath} />
+              {trendLines.map(({ metric, path }) => (
+                <path key={metric} className="trend-line" d={path} style={{ stroke: TREND_COLORS[metric] }} />
+              ))}
               {trendPoints.map((point, index) => {
                 const showLabel = trendRange === "7d" || index % 4 === 0 || index === trendPoints.length - 1;
                 const hitWidth = plotWidth / Math.max(1, trendPoints.length - 1);
                 return (
                   <g key={point.key}>
                     {showLabel && <text className="trend-axis-label" x={point.x} y={chart.height - 8} textAnchor="middle">{point.label}</text>}
-                    {trendMetricValue(point, trendMetric) > 0 && <circle className="trend-data-point" cx={point.x} cy={point.y} r="3" />}
                     <rect className="trend-hit-area" x={point.x - hitWidth / 2} y={chart.top} width={hitWidth} height={plotHeight} onMouseEnter={() => setHoveredTrend(index)} />
                   </g>
                 );
               })}
-              {hoveredPoint && <g className="trend-crosshair"><line x1={hoveredPoint.x} x2={hoveredPoint.x} y1={chart.top} y2={chart.top + plotHeight} /><line x1={chart.left} x2={chart.width - chart.right} y1={hoveredPoint.y} y2={hoveredPoint.y} /><circle cx={hoveredPoint.x} cy={hoveredPoint.y} r="5" /></g>}
+              {hoveredPoint && (
+                <g className="trend-crosshair">
+                  <line x1={hoveredPoint.x} x2={hoveredPoint.x} y1={chart.top} y2={chart.top + plotHeight} />
+                  {hoveredMetricPoints.map(({ metric, y }) => (
+                    <circle key={metric} cx={hoveredPoint.x} cy={y} r="4" style={{ stroke: TREND_COLORS[metric] }} />
+                  ))}
+                </g>
+              )}
             </svg>
             {hoveredPoint && (
               <div
-                className={`trend-tooltip ${hoveredPoint.y < chart.top + 55 ? "below" : ""}`}
-                style={{ left: `${Math.min(86, Math.max(14, (hoveredPoint.x / chart.width) * 100))}%`, top: `${(hoveredPoint.y / chart.height) * 100}%` }}
+                className={`trend-tooltip ${hoveredAnchorY < chart.top + 70 ? "below" : ""}`}
+                style={{ left: `${Math.min(86, Math.max(14, (hoveredPoint.x / chart.width) * 100))}%`, top: `${(hoveredAnchorY / chart.height) * 100}%` }}
               >
                 <strong>{formatTrendTimestamp(hoveredPoint.key, trendRange)}</strong>
-                <span><em>Token</em><b>{hoveredPoint.tokens.toLocaleString("zh-CN")}</b></span>
+                {visibleTrendMetrics.map((metric) => (
+                  <span key={metric}>
+                    <em><i style={{ backgroundColor: TREND_COLORS[metric] }} />{trendMetricLabel(metric)}</em>
+                    <b>{formatTrendMetric(trendMetricValue(hoveredPoint, metric), metric)}</b>
+                  </span>
+                ))}
                 <span><em>请求数</em><b>{hoveredPoint.requests}</b></span>
-                <span><em>平均首字</em><b>{formatDuration(hoveredPoint.avgTtftMs)}</b></span>
-                <span><em>消耗金额</em><b>{formatUsd(hoveredPoint.estimatedCost)}</b></span>
-                <span><em>错误数</em><b>{hoveredPoint.errors}</b></span>
               </div>
             )}
           </div>
         </section>
+        </div>
 
         <div className="overview-side-stack">
           <section className="panel providers-panel">
-            <header className="section-heading">
-              <div><h2>中转表现</h2><p>{providers.length ? `${providerRangeLabel} · ${healthy}/${providers.length} 个中转正常` : "等待添加中转"}</p></div>
-              <label className="switch provider-name-switch" title={providerNamesVisible ? "关闭后脱敏中转名称" : "开启后显示中转名称"}>
-                <input
-                  type="checkbox"
-                  checked={providerNamesVisible}
-                  aria-label="显示中转名称"
-                  onChange={(event) => {
-                    const visible = event.currentTarget.checked;
+            <header className="section-heading provider-overview-heading">
+              <div className="provider-overview-title-row">
+                <h2>渠道概览</h2>
+                <span className="provider-status-summary" aria-label="渠道状态统计">
+                  <span>正常:{providerStatusCounts.normal}</span>
+                  <span>熔断:{providerStatusCounts.open}</span>
+                  <span>观察:{providerStatusCounts.observing}</span>
+                  <span>禁用:{providerStatusCounts.disabled}</span>
+                </span>
+                <button
+                  className="icon-button provider-privacy-button"
+                  type="button"
+                  title={providerNamesVisible ? "隐藏渠道名称" : "显示渠道名称"}
+                  aria-label={providerNamesVisible ? "隐藏渠道名称" : "显示渠道名称"}
+                  aria-pressed={!providerNamesVisible}
+                  onClick={() => {
+                    const visible = !providerNamesVisible;
                     setProviderNamesVisible(visible);
                     saveProviderNamesVisible(visible);
                   }}
-                />
-                <span />
-              </label>
+                >
+                  {providerNamesVisible ? <Eye size={16} /> : <EyeOff size={16} />}
+                </button>
+              </div>
+              <div className="provider-sort-tabs" role="radiogroup" aria-label="渠道排序">
+                {([
+                  ["priority", "优先级"],
+                  ["cost", "消费高"],
+                  ["speed", "速度快"],
+                  ["cache", "缓存高"],
+                ] as const).map(([mode, label]) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    role="radio"
+                    aria-checked={providerSortMode === mode}
+                    className={providerSortMode === mode ? "active" : ""}
+                    onClick={() => setProviderSortMode(mode)}
+                  >{label}</button>
+                ))}
+              </div>
             </header>
             {providers.length === 0 ? <EmptyState title="尚未配置中转" description="添加中转后即可开始路由。" action={<button className="button button-primary" onClick={() => onNavigate("providers")}>添加中转</button>} /> : (
               <div className="provider-health-list">
-                {orderedProviders.map((provider, index) => {
+                {displayedProviders.map((provider, index) => {
                   const usage = providerUsage.find((item) => item.name === provider.name);
                   const measured = usage ? usage.completed + usage.errors : 0;
                   const errorRate = measured && usage ? Math.round((usage.errors / measured) * 100) : 0;
                   return (
-                    <button type="button" key={provider.id} className="provider-health-row" onClick={() => onNavigate("providers")}>
+                    <button type="button" key={provider.id} className={`provider-health-row ${providerNamesVisible ? "" : "names-hidden"}`.trim()} onClick={() => onNavigate("providers")}>
                       <span className="provider-route-rank">{index + 1}</span>
                       <span className="provider-health-name">
-                        <strong>{displayProviderName(provider.name, providerNamesVisible, providerAliases)}</strong>
+                        {providerNamesVisible && <strong>{provider.name}</strong>}
                         {usage ? (
                           <em className="provider-health-metrics">
                             <span>请求 <b>{usage.upstream_calls}</b></span>
                             <span>平均首字 <b>{formatDuration(usage.avg_ttft_ms)}</b></span>
                             <span>错误率 <b>{errorRate}%</b></span>
                             <span>消费金额 <b>{formatUsd(usage.estimated_cost_usd)}</b></span>
+                            <span>缓存率 <b>{formatCacheHitRate(usage.cache_input_tokens, usage.cached_tokens)}</b></span>
                           </em>
                         ) : <em>暂无使用记录</em>}
                       </span>
@@ -549,9 +647,7 @@ export function Overview({
                   <td><span className="tabular">{formatTime(request.started_at)}</span></td>
                   <td>
                     <button className="usage-record-link" type="button" onClick={() => onOpenRequest(request)}>
-                      <strong>{request.requested_model || "正在识别模型"}</strong>
-                      <small className="model-runtime-meta" title={request.actual_upstream_model || undefined}>实际 {request.actual_upstream_model || "未返回"} · 强度 {reasoningEffortLabel(request.reasoning_effort)}</small>
-                      <small className="model-provider-name">{displayProviderName(request.provider_name, providerNamesVisible, providerAliases)}</small>
+                      <ModelRuntime requestedModel={request.requested_model} actualModel={request.actual_upstream_model} reasoningEffort={request.reasoning_effort} providerName={providerNamesVisible ? request.provider_name : null} />
                     </button>
                   </td>
                   <td><TokenStack input={request.input_tokens} cached={request.cached_tokens} output={request.output_tokens} /></td>
@@ -569,7 +665,7 @@ export function Overview({
       </section>
 
       <section className="quick-facts">
-        <div><Check size={17} /><span>调用顺序</span><strong className="route-summary" title={displayedRouteNames.join(" → ")}>{routeSummary}</strong></div>
+        <div><Check size={17} /><span>调用顺序</span><strong className="route-summary" title={providerNamesVisible ? activeRouteNames.join(" → ") : "渠道名称已隐藏"}>{routeSummary}</strong></div>
         <div><Route size={17} /><span>故障转移</span><strong>{stats.summary.failovers || 0} 次</strong></div>
         <div><Clock3 size={17} /><span>服务启动</span><strong>{formatTime(service.started_at)}</strong></div>
       </section>
@@ -639,11 +735,6 @@ function saveProviderNamesVisible(visible: boolean) {
   }
 }
 
-function displayProviderName(name: string | null | undefined, visible: boolean, aliases: Map<string, string>) {
-  if (!name) return "未选择中转";
-  return visible ? name : aliases.get(name) ?? "其他中转";
-}
-
 function fallbackCopy(value: string) {
   const input = document.createElement("textarea");
   input.value = value;
@@ -668,16 +759,28 @@ function buildDailySeries(daily: Stats["daily"]): Stats["daily"] {
     date.setUTCHours(0, 0, 0, 0);
     date.setUTCDate(date.getUTCDate() - (6 - index));
     const day = date.toISOString().slice(0, 10);
-    return byDay.get(day) ?? { day, requests: 0, completed: 0, errors: 0, avg_ttft_ms: null, tokens: 0, estimated_cost_usd: 0 };
+    return byDay.get(day) ?? {
+      day,
+      requests: 0,
+      completed: 0,
+      errors: 0,
+      avg_ttft_ms: null,
+      tokens: 0,
+      cached_tokens: 0,
+      cache_input_tokens: 0,
+      estimated_cost_usd: 0,
+    };
   });
 }
 
-type TrendMetric = "tokens" | "ttft" | "cost" | "errors";
+type TrendMetric = "tokens" | "cache_rate" | "ttft" | "cost" | "errors";
 type TrendPoint = {
   key: string;
   label: string;
   requests: number;
   tokens: number;
+  cachedTokens: number;
+  cacheInputTokens: number;
   estimatedCost: number;
   avgTtftMs: number | null;
   errors: number;
@@ -685,10 +788,19 @@ type TrendPoint = {
 
 const TREND_METRICS: Array<[TrendMetric, string]> = [
   ["tokens", "Token"],
+  ["cache_rate", "缓存率"],
   ["ttft", "平均首字"],
   ["cost", "消费金额"],
   ["errors", "错误数"],
 ];
+
+const TREND_COLORS: Record<TrendMetric, string> = {
+  tokens: "#20a66a",
+  cache_rate: "#347fe2",
+  ttft: "#795ce5",
+  cost: "#ed8730",
+  errors: "#db5368",
+};
 
 function buildCalendarHourlySeries(hourly: Stats["hourly"], daysAgo: number): TrendPoint[] {
   const byHour = new Map(hourly.map((item) => [item.hour, item]));
@@ -703,6 +815,8 @@ function buildCalendarHourlySeries(hourly: Stats["hourly"], daysAgo: number): Tr
       label: `${String(index).padStart(2, "0")}时`,
       requests: item?.requests ?? 0,
       tokens: item?.tokens ?? 0,
+      cachedTokens: item?.cached_tokens ?? 0,
+      cacheInputTokens: item?.cache_input_tokens ?? 0,
       estimatedCost: item?.estimated_cost_usd ?? 0,
       avgTtftMs: item?.avg_ttft_ms ?? null,
       errors: item?.errors ?? 0,
@@ -711,6 +825,7 @@ function buildCalendarHourlySeries(hourly: Stats["hourly"], daysAgo: number): Tr
 }
 
 function trendMetricValue(point: TrendPoint, metric: TrendMetric) {
+  if (metric === "cache_rate") return cacheHitRate(point.cacheInputTokens, point.cachedTokens) ?? 0;
   if (metric === "ttft") return point.avgTtftMs ?? 0;
   if (metric === "cost") return point.estimatedCost;
   if (metric === "errors") return point.errors;
@@ -722,10 +837,28 @@ function trendMetricLabel(metric: TrendMetric) {
 }
 
 function formatTrendMetric(value: number, metric: TrendMetric) {
+  if (metric === "cache_rate") return `${Math.round(value)}%`;
   if (metric === "ttft") return formatDuration(Math.round(value));
   if (metric === "cost") return formatUsd(value);
   if (metric === "errors") return String(Math.round(value));
   return formatTokens(Math.round(value));
+}
+
+function buildSmoothTrendPath(points: Array<{ x: number; y: number }>, minY: number, maxY: number) {
+  if (!points.length) return "";
+  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
+
+  const clampY = (value: number) => Math.min(maxY, Math.max(minY, value));
+  return points.slice(1).reduce((path, next, index) => {
+    const current = points[index];
+    const previous = points[index - 1] ?? current;
+    const following = points[index + 2] ?? next;
+    const control1X = current.x + (next.x - previous.x) / 6;
+    const control1Y = clampY(current.y + (next.y - previous.y) / 6);
+    const control2X = next.x - (following.x - current.x) / 6;
+    const control2Y = clampY(next.y - (following.y - current.y) / 6);
+    return `${path} C ${control1X} ${control1Y} ${control2X} ${control2Y} ${next.x} ${next.y}`;
+  }, `M ${points[0].x} ${points[0].y}`);
 }
 
 function formatTrendTimestamp(key: string, range: "today" | "yesterday" | "7d") {

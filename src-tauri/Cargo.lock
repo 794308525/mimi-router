@@ -458,7 +458,7 @@ dependencies = [
 
 [[package]]
 name = "codex-relay-router"
-version = "0.2.3"
+version = "0.2.13"
 dependencies = [
  "tauri",
  "tauri-build",

@@ -3,7 +3,7 @@ import { after, before, test } from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyRouteMemberPriorities, createDatabase, getAdaptiveFirstTokenTimeout, getPricingCatalog, getRouterSettings, listRoutes, pruneExpiredDiagnostics, pruneExpiredRequests, resolveModelPricing, saveOfficialPricing, saveProvider, saveRouteGroup, saveRouteRule, saveRouterSettings } from "../server/db.mjs";
+import { applyRouteMemberPriorities, createDatabase, getAdaptiveFirstTokenTimeout, getAdaptiveFirstTokenTimeoutPreview, getPricingCatalog, getRouterSettings, getStats, listRoutes, pruneExpiredDiagnostics, pruneExpiredRequests, resolveModelPricing, saveOfficialPricing, saveProvider, saveRouteGroup, saveRouteRule, saveRouterSettings } from "../server/db.mjs";
 import { DEFAULT_MODEL, DEFAULT_TEST_MODEL } from "../server/constants.mjs";
 import { codexSnippet } from "../server/codex-config.mjs";
 
@@ -276,8 +276,54 @@ test("derives adaptive first-token timeouts from a trimmed provider and model ba
   assert.equal(adaptive.sample_count, 5);
   assert.equal(adaptive.source, "7d");
 
+  const preview = getAdaptiveFirstTokenTimeoutPreview(db, 30000);
+  assert.equal(preview.timeout_ms, 9000);
+  assert.equal(preview.provider_id, provider.id);
+  assert.equal(preview.requested_model, "adaptive-model");
+
   const fallback = getAdaptiveFirstTokenTimeout(db, provider.id, "missing-model", 28000);
   assert.equal(fallback.baseline_ms, null);
   assert.equal(fallback.timeout_ms, 28000);
   assert.equal(fallback.source, "fallback");
+});
+
+test("aggregates cache hit rates from known usage with an input-weighted denominator", () => {
+  const statsDirectory = mkdtempSync(join(tmpdir(), "codex-router-cache-stats-test-"));
+  const statsDb = createDatabase(statsDirectory);
+  const provider = saveProvider(statsDb, {
+    name: "Cache stats upstream",
+    base_url: "http://127.0.0.1:19993/v1",
+  });
+  const startedAt = new Date().toISOString();
+  const samples = [
+    ["cache-1", 100, 40, 10],
+    ["cache-2", 300, 210, 20],
+    ["cache-unknown", 500, null, 30],
+  ];
+  for (const [id, input, cached, output] of samples) {
+    statsDb.prepare(`
+      INSERT INTO requests (
+        id, started_at, ended_at, status, requested_model, final_provider_id,
+        attempt_count, input_tokens, cached_tokens, output_tokens
+      ) VALUES (?, ?, ?, 'completed', 'gpt-test', ?, 1, ?, ?, ?)
+    `).run(id, startedAt, startedAt, provider.id, input, cached, output);
+    statsDb.prepare(`
+      INSERT INTO request_attempts (
+        id, request_id, sequence, provider_id, started_at, ended_at, status,
+        input_tokens, cached_tokens, output_tokens
+      ) VALUES (?, ?, 1, ?, ?, ?, 'completed', ?, ?, ?)
+    `).run(`${id}-attempt`, id, provider.id, startedAt, startedAt, input, cached, output);
+  }
+
+  const stats = getStats(statsDb, 1);
+  assert.equal(stats.summary.cached_tokens, 250);
+  assert.equal(stats.summary.cache_input_tokens, 400);
+  assert.equal(stats.daily[0].cached_tokens, 250);
+  assert.equal(stats.daily[0].cache_input_tokens, 400);
+  assert.equal(stats.by_provider[0].cached_tokens, 250);
+  assert.equal(stats.by_provider[0].cache_input_tokens, 400);
+  assert.equal(stats.by_provider[0].tokens, 960);
+
+  statsDb.close();
+  rmSync(statsDirectory, { recursive: true, force: true });
 });

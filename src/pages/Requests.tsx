@@ -8,11 +8,13 @@ import {
   EmptyState,
   ElapsedTime,
   Modal,
+  ModelRuntime,
   PageHeader,
   RequestFailureReason,
   RequestStatus,
   TokenStack,
   failureReasonLabel,
+  formatCacheHitRate,
   formatDuration,
   formatRequestCost,
   formatTime,
@@ -150,7 +152,7 @@ export function RequestsPage({
                   <tr key={request.id} className={running ? "running-row" : ""} onClick={() => openDetail(request)}>
                     <td><div className="request-status-cell"><RequestStatus status={request.status} /><RequestFailureReason request={request} /></div></td>
                     <td><span className="tabular">{formatTime(request.started_at)}</span></td>
-                    <td><div className="model-cell"><strong>{request.requested_model || "识别中"}</strong><small title={request.actual_upstream_model || undefined}>实际 {request.actual_upstream_model || "未返回"} · 强度 {reasoningEffortLabel(request.reasoning_effort)}</small></div></td>
+                    <td><ModelRuntime requestedModel={request.requested_model} actualModel={request.actual_upstream_model} reasoningEffort={request.reasoning_effort} /></td>
                     <td>{request.provider_name || <span className="text-muted">等待路由</span>}</td>
                     <td><ElapsedTime startedAt={request.started_at} durationMs={request.duration_ms} running={running} /></td>
                     <td><strong className={`first-token-value ${firstToken.tone}`} title={firstToken.title}>{formatDuration(request.ttft_ms)}</strong></td>
@@ -210,7 +212,8 @@ function RequestDetail({
         <div><span>请求上传</span><strong>{formatDuration(request.request_upload_ms)}</strong></div>
         <div><span>上游等待</span><strong>{formatDuration(request.upstream_wait_ms)}</strong></div>
         <div><span>消耗金额</span><strong title={request.cost_status === "partial" ? "异常结束前收到的部分用量" : request.cost_status === "unknown" ? "上游未返回足够用量" : undefined}>{formatRequestCost(request.total_cost_usd, request.cost_status)}</strong></div>
-        <div><span>缓存 Token</span><strong>{formatTokens(request.cached_tokens)}</strong></div>
+        <div><span>缓存 Token（含于输入）</span><strong>{formatTokens(request.cached_tokens)}</strong></div>
+        <div><span>缓存命中率</span><strong>{formatCacheHitRate(request.input_tokens, request.cached_tokens)}</strong></div>
         <div><span>计价模型</span><strong>{request.pricing_model || "未匹配官方价格"}</strong></div>
         <div><span>流阶段</span><strong>{streamPhaseLabel(request.stream_phase)}</strong></div>
         <div><span>最后事件</span><strong>{request.last_stream_event || "-"}</strong></div>

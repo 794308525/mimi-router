@@ -1,6 +1,150 @@
 {
-  "currentVersion": "0.2.3",
+  "currentVersion": "0.2.13",
   "releases": [
+    {
+      "version": "0.2.13",
+      "date": "2026-08-16",
+      "notes": {
+        "zh-CN": [
+          "首页渠道概览增加正常、熔断、观察和停用状态统计，隐私模式直接隐藏渠道名称。",
+          "最近使用记录将渠道名并入推理强度行，减少纵向占用并保持隐私设置一致。",
+          "中转管理增加今日、昨日和 7 日统计范围，每个中转展示请求、平均首字、错误率、消费和缓存率。",
+          "中转管理新增默认脱敏的小眼睛开关；显示名称时点击中转可打开 Base URL 对应的官网根域名。"
+        ],
+        "en": [
+          "Added normal, circuit-open, observing, and disabled provider counts to the dashboard while hiding provider names entirely in privacy mode.",
+          "Moved provider names onto the reasoning-effort line in recent usage records to reduce vertical space while respecting privacy settings.",
+          "Added Today, Yesterday, and 7-day ranges to provider management, with requests, average TTFT, error rate, spend, and cache rate per provider.",
+          "Added a default-masked eye control to provider management; visible provider names now open the website origin derived from the Base URL."
+        ]
+      }
+    },
+    {
+      "version": "0.2.12",
+      "date": "2026-08-16",
+      "notes": {
+        "zh-CN": [
+          "中转管理新增并发全测与熔断全恢复快捷操作，完成后统一刷新并汇总结果。",
+          "隐私模式匿名名称统一为渠道，并改用紧凑的眼睛按钮切换显示，同时优化最近使用记录的模型与 Token 列宽。",
+          "渠道概览新增优先级、消费高、速度快和缓存高单选排序，各项统计均跟随当前所选时间范围。",
+          "用量趋势移除独立时间选择，统一跟随使用概览的今日、昨日和 7 日范围。"
+        ],
+        "en": [
+          "Added concurrent test-all and reset-all circuit actions to provider management, with a single refresh and summarized results.",
+          "Standardized anonymized provider labels, replaced the privacy switch with a compact eye button, and rebalanced the model and token columns in recent usage records.",
+          "Added priority, spend, speed, and cache-rate sorting to Provider Overview, with every metric scoped to the selected time range.",
+          "Removed the separate usage-trend range selector so the chart follows the Today, Yesterday, and 7-day range selected in Usage Overview."
+        ]
+      }
+    },
+    {
+      "version": "0.2.11",
+      "date": "2026-08-16",
+      "notes": {
+        "zh-CN": [
+          "自动均衡模式显示后端实际算法计算的参考秒数，并标明样本来源与动态变化范围。"
+        ],
+        "en": [
+          "Adaptive mode now displays a reference timeout calculated by the routing engine, with its sample source and dynamic behavior explained."
+        ]
+      }
+    },
+    {
+      "version": "0.2.10",
+      "date": "2026-08-16",
+      "notes": {
+        "zh-CN": [
+          "首页首字控制改为“切慢首字”，自动均衡状态以动态时限符号展示，同时保留指定时限数据。",
+          "中转表现更名为“渠道概览”，并明确标注渠道名称隐私模式。",
+          "进行中的请求总耗时持续保留一位小数，便于观察实时变化。"
+        ],
+        "en": [
+          "Renamed the first-token control to better describe slow-response switching and display a dynamic marker in adaptive mode without changing the saved fixed timeout.",
+          "Renamed provider performance to Provider Overview and clearly labeled the provider-name privacy mode.",
+          "Active request durations now continuously retain one decimal place for clearer real-time updates."
+        ]
+      }
+    },
+    {
+      "version": "0.2.9",
+      "date": "2026-08-16",
+      "notes": {
+        "zh-CN": [
+          "首页概览将实时请求置于本地请求之前，并把首字控制与运行统计收进同一紧凑区域。",
+          "减少概览区域纵向占用，为趋势图和使用记录释放更多首屏空间。"
+        ],
+        "en": [
+          "Moved live requests ahead of local requests and consolidated first-token controls and runtime statistics into one compact overview area.",
+          "Reduced vertical dashboard usage to expose more of the trend chart and request history above the fold."
+        ]
+      }
+    },
+    {
+      "version": "0.2.8",
+      "date": "2026-08-16",
+      "notes": {
+        "zh-CN": [
+          "首页使用概览与运行状态合并为左栏卡片，中转表现上移并与左侧内容等高。",
+          "中转表现移除副标题，超出等高区域的内容支持卡片内滚动。"
+        ],
+        "en": [
+          "Merged usage and live status into a single left-column card, with provider performance moved up and matched to the left-column height.",
+          "Removed the provider performance subtitle and enabled internal scrolling for overflow content."
+        ]
+      }
+    },
+    {
+      "version": "0.2.7",
+      "date": "2026-08-16",
+      "notes": {
+        "zh-CN": [
+          "请求模型与返回模型相同时不再重复显示，不一致时以醒目的箭头标出模型变化。",
+          "修复 Token 与缓存率在窄列中重叠的问题，并提高界面最小字号。"
+        ],
+        "en": [
+          "Identical requested and returned models are no longer repeated, while model changes are highlighted with a clear arrow.",
+          "Fixed token and cache-rate overlap in narrow columns and increased the minimum interface font size."
+        ]
+      }
+    },
+    {
+      "version": "0.2.6",
+      "date": "2026-08-16",
+      "notes": {
+        "zh-CN": [
+          "用量趋势改用边界受控的平滑曲线，减少折线转折的僵硬感。"
+        ],
+        "en": [
+          "Usage trends now use boundary-constrained smooth curves for softer transitions between data points."
+        ]
+      }
+    },
+    {
+      "version": "0.2.5",
+      "date": "2026-08-16",
+      "notes": {
+        "zh-CN": [
+          "用量趋势支持多指标叠加展示，默认显示全部指标，并可通过图例独立隐藏。"
+        ],
+        "en": [
+          "Usage trends now overlay all metrics by default and allow each series to be toggled independently from the legend."
+        ]
+      }
+    },
+    {
+      "version": "0.2.4",
+      "date": "2026-08-16",
+      "notes": {
+        "zh-CN": [
+          "新增请求级、汇总、中转和趋势缓存命中率，按已知缓存明细加权计算。",
+          "修正部分 Token 字段缺失时趋势与中转统计漏算已知用量的问题。"
+        ],
+        "en": [
+          "Added weighted cache hit rates across request records, summaries, provider performance, and usage trends.",
+          "Fixed usage trends and provider statistics dropping known token usage when one token field is missing."
+        ]
+      }
+    },
     {
       "version": "0.2.3",
       "date": "2026-08-16",

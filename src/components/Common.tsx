@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { AlertCircle, CheckCircle2, X } from "lucide-react";
+import { AlertCircle, ArrowRight, CheckCircle2, X } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Notice, Provider, RequestRecord } from "../types";
 
@@ -228,7 +228,15 @@ export function ElapsedTime({
     return () => window.clearInterval(timer);
   }, [durationMs, running, startedAt]);
 
-  return <strong className={`elapsed-time ${running ? "live-time" : ""}`}>{formatDuration(elapsed)}</strong>;
+  return <strong className={`elapsed-time ${running ? "live-time" : ""}`}>{running ? formatLiveDuration(elapsed) : formatDuration(elapsed)}</strong>;
+}
+
+function formatLiveDuration(ms: number | null) {
+  if (ms == null) return "-";
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)} s`;
+  const minutes = Math.floor(ms / 60000);
+  const seconds = (ms % 60000) / 1000;
+  return `${minutes}m ${seconds.toFixed(1)}s`;
 }
 
 export function formatDuration(ms: number | null | undefined) {
@@ -248,16 +256,52 @@ export function formatTokens(value: number | null | undefined) {
   return compactNumber(value, 1_000, "K");
 }
 
+export function cacheHitRate(input: number | null | undefined, cached: number | null | undefined) {
+  if (input == null || cached == null || input <= 0) return null;
+  return (cached / input) * 100;
+}
+
+export function formatCacheHitRate(input: number | null | undefined, cached: number | null | undefined, digits = 1) {
+  const rate = cacheHitRate(input, cached);
+  return rate == null ? "-" : `${Number(rate.toFixed(digits))}%`;
+}
+
 export function TokenStack({ input, cached, output }: {
   input: number | null | undefined;
   cached: number | null | undefined;
   output: number | null | undefined;
 }) {
+  const cacheRate = cacheHitRate(input, cached);
   return (
     <span className="token-stack">
-      <span><em>入</em><b>{formatTokens(input)}</b></span>
-      <span><em>缓</em><b>{formatTokens(cached)}</b></span>
+      <span title="输入 Token 已包含缓存 Token"><em>入</em><b>{formatTokens(input)}</b></span>
+      <span title={cacheRate == null ? "上游未返回缓存明细" : `缓存是输入 Token 的子集，命中率 ${formatCacheHitRate(input, cached)}`}>
+        <em>缓</em>
+        <span className="token-cache-value"><b>{formatTokens(cached)}</b>{cacheRate != null && <small>{formatCacheHitRate(input, cached, 0)}</small>}</span>
+      </span>
       <span><em>出</em><b>{formatTokens(output)}</b></span>
+    </span>
+  );
+}
+
+export function ModelRuntime({ requestedModel, actualModel, reasoningEffort, providerName }: {
+  requestedModel: string | null | undefined;
+  actualModel: string | null | undefined;
+  reasoningEffort: string | null | undefined;
+  providerName?: string | null;
+}) {
+  const requested = requestedModel?.trim();
+  const actual = actualModel?.trim();
+  const fallback = requested || actual || "识别中";
+  const changed = Boolean(requested && actual && requested.toLowerCase() !== actual.toLowerCase());
+  const title = changed ? `${requested} → ${actual}` : fallback;
+
+  return (
+    <span className={`model-runtime ${changed ? "is-changed" : ""}`}>
+      <strong className="model-runtime-line" title={title}>
+        {changed ? <><span>{requested}</span><ArrowRight size={12} /><span>{actual}</span></> : fallback}
+      </strong>
+      <small className="model-runtime-meta">强度 {reasoningEffortLabel(reasoningEffort)}{providerName && <> · {providerName}</>}</small>
     </span>
   );
 }

@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   createDatabase,
+  getAdaptiveFirstTokenTimeoutPreview,
   getProvider,
   getPricingCatalog,
   getRequest,
@@ -116,7 +117,7 @@ async function handleApi(req, res, url) {
       stats: getStats(db, 7),
       pricing: getPricingCatalog(db),
       codex: codexStatus(port, { apiAuthEnabled: routerAuthEnabled, apiKey: routerApiKey }),
-      router_settings: getRouterSettings(db),
+      router_settings: managementRouterSettings(),
     });
   }
 
@@ -139,8 +140,9 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "PUT" && url.pathname === "/api/router-settings") {
-    const settings = saveRouterSettings(db, await bodyJson(req));
-    routerAuthEnabled = settings.api_auth_enabled;
+    const saved = saveRouterSettings(db, await bodyJson(req));
+    routerAuthEnabled = saved.api_auth_enabled;
+    const settings = managementRouterSettings();
     publish("router.settings_changed", { settings });
     return json(res, 200, settings);
   }
@@ -324,6 +326,14 @@ async function handleApi(req, res, url) {
   }
 
   return json(res, 404, { error: "API not found" });
+}
+
+function managementRouterSettings() {
+  const settings = getRouterSettings(db);
+  return {
+    ...settings,
+    adaptive_first_token_preview: getAdaptiveFirstTokenTimeoutPreview(db, settings.first_token_timeout_ms),
+  };
 }
 
 function addProviderToDefaultGroup(providerId) {

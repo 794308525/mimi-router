@@ -705,6 +705,35 @@ export function getAdaptiveFirstTokenTimeout(db, providerId, requestedModel, fal
   };
 }
 
+export function getAdaptiveFirstTokenTimeoutPreview(db, fallbackMs = 30000) {
+  const context = db.prepare(`
+    SELECT r.final_provider_id AS provider_id, r.requested_model, p.name AS provider_name
+      FROM requests r
+      JOIN providers p ON p.id = r.final_provider_id
+     WHERE r.status = 'completed' AND r.final_provider_id IS NOT NULL
+       AND r.requested_model IS NOT NULL AND r.requested_model != ''
+     ORDER BY r.started_at DESC, r.rowid DESC
+     LIMIT 1
+  `).get();
+  if (!context) {
+    return {
+      timeout_ms: Math.min(600000, Math.max(1000, positiveInt(fallbackMs, 30000))),
+      baseline_ms: null,
+      sample_count: 0,
+      source: "fallback",
+      provider_id: null,
+      provider_name: null,
+      requested_model: null,
+    };
+  }
+  return {
+    ...getAdaptiveFirstTokenTimeout(db, context.provider_id, context.requested_model, fallbackMs),
+    provider_id: context.provider_id,
+    provider_name: context.provider_name,
+    requested_model: context.requested_model,
+  };
+}
+
 export function saveProvider(db, input, id = randomUUID()) {
   const timestamp = now();
   const existing = getProvider(db, id);
@@ -1003,7 +1032,9 @@ export function getStats(db, days = 7) {
       SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
       SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS errors,
       ROUND(AVG(CASE WHEN ttft_ms IS NOT NULL THEN ttft_ms END)) AS avg_ttft_ms,
-      COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens,
+      COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) AS tokens,
+      COALESCE(SUM(CASE WHEN cached_tokens IS NOT NULL THEN cached_tokens ELSE 0 END), 0) AS cached_tokens,
+      COALESCE(SUM(CASE WHEN cached_tokens IS NOT NULL AND input_tokens IS NOT NULL THEN input_tokens ELSE 0 END), 0) AS cache_input_tokens,
       COALESCE(SUM(total_cost_usd), 0) AS estimated_cost_usd
     FROM requests WHERE started_at >= ? GROUP BY day ORDER BY day ASC
   `).all(since);
@@ -1012,7 +1043,9 @@ export function getStats(db, days = 7) {
       SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
       SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS errors,
       ROUND(AVG(CASE WHEN ttft_ms IS NOT NULL THEN ttft_ms END)) AS avg_ttft_ms,
-      COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens,
+      COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) AS tokens,
+      COALESCE(SUM(CASE WHEN cached_tokens IS NOT NULL THEN cached_tokens ELSE 0 END), 0) AS cached_tokens,
+      COALESCE(SUM(CASE WHEN cached_tokens IS NOT NULL AND input_tokens IS NOT NULL THEN input_tokens ELSE 0 END), 0) AS cache_input_tokens,
       COALESCE(SUM(total_cost_usd), 0) AS estimated_cost_usd
     FROM requests WHERE started_at >= ? GROUP BY hour ORDER BY hour ASC
   `).all(since24Hours);
@@ -1048,7 +1081,9 @@ function providerSummary(db, since, until = null) {
       ROUND(AVG(a.duration_ms)) AS avg_duration_ms,
       ROUND(AVG(CASE WHEN a.first_byte_at IS NOT NULL
         THEN (julianday(a.first_byte_at) - julianday(a.started_at)) * 86400000 END)) AS avg_ttft_ms,
-      COALESCE(SUM(a.input_tokens + a.output_tokens), 0) AS tokens,
+      COALESCE(SUM(COALESCE(a.input_tokens, 0) + COALESCE(a.output_tokens, 0)), 0) AS tokens,
+      COALESCE(SUM(CASE WHEN a.cached_tokens IS NOT NULL THEN a.cached_tokens ELSE 0 END), 0) AS cached_tokens,
+      COALESCE(SUM(CASE WHEN a.cached_tokens IS NOT NULL AND a.input_tokens IS NOT NULL THEN a.input_tokens ELSE 0 END), 0) AS cache_input_tokens,
       COALESCE(SUM(a.total_cost_usd), 0) AS estimated_cost_usd
     FROM request_attempts a JOIN providers p ON p.id = a.provider_id
     WHERE ${range} GROUP BY a.provider_id ORDER BY upstream_calls DESC
@@ -1062,7 +1097,9 @@ function hourlySummary(db, since, until = null) {
       COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) AS completed,
       COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) AS errors,
       ROUND(AVG(CASE WHEN ttft_ms IS NOT NULL THEN ttft_ms END)) AS avg_ttft_ms,
-      COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens,
+      COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) AS tokens,
+      COALESCE(SUM(CASE WHEN cached_tokens IS NOT NULL THEN cached_tokens ELSE 0 END), 0) AS cached_tokens,
+      COALESCE(SUM(CASE WHEN cached_tokens IS NOT NULL AND input_tokens IS NOT NULL THEN input_tokens ELSE 0 END), 0) AS cache_input_tokens,
       COALESCE(SUM(total_cost_usd), 0) AS estimated_cost_usd
     FROM requests WHERE ${range} GROUP BY hour ORDER BY hour ASC
   `).all(...(until ? [since, until] : [since]));
@@ -1084,6 +1121,8 @@ function requestSummary(db, since, until = null) {
       COALESCE(SUM(CASE WHEN status IN ('received','routing','connecting','streaming') THEN 1 ELSE 0 END), 0) AS running,
       COALESCE(SUM(input_tokens), 0) AS input_tokens,
       COALESCE(SUM(output_tokens), 0) AS output_tokens,
+      COALESCE(SUM(CASE WHEN cached_tokens IS NOT NULL THEN cached_tokens ELSE 0 END), 0) AS cached_tokens,
+      COALESCE(SUM(CASE WHEN cached_tokens IS NOT NULL AND input_tokens IS NOT NULL THEN input_tokens ELSE 0 END), 0) AS cache_input_tokens,
       COALESCE(SUM(total_cost_usd), 0) AS estimated_cost_usd,
       COALESCE(SUM(CASE WHEN cost_status = 'partial' THEN 1 ELSE 0 END), 0) AS partial_cost,
       COALESCE(SUM(CASE WHEN cost_status = 'unknown' THEN 1 ELSE 0 END), 0) AS unknown_cost,

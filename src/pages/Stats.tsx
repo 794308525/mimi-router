@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { BarChart3, Clock3, GitCompareArrows, RefreshCcw } from "lucide-react";
 import { api } from "../api";
 import type { Notice, Stats } from "../types";
-import { EmptyState, Metric, PageHeader, formatDuration, formatTokens, formatUsd } from "../components/Common";
+import { EmptyState, Metric, PageHeader, formatCacheHitRate, formatDuration, formatTokens, formatUsd } from "../components/Common";
 
 export function StatsPage({ initial, setNotice }: { initial: Stats; setNotice: (notice: Notice) => void }) {
   const [days, setDays] = useState(initial.days);
@@ -40,7 +40,7 @@ export function StatsPage({ initial, setNotice }: { initial: Stats; setNotice: (
       <section className="metrics-row">
         <Metric label="本地请求" value={stats.summary.total} detail={`${stats.summary.upstream_calls} 次上游调用`} />
         <Metric label="成功率" value={`${successRate}%`} detail={`${stats.summary.local_rejected || 0} 次本地拦截 · ${stats.summary.client_disconnected || 0} 次断开`} />
-        <Metric label="Token" value={formatTokens(stats.summary.input_tokens + stats.summary.output_tokens)} detail={`${formatTokens(stats.summary.input_tokens)} 输入`} />
+        <Metric label="Token" value={formatTokens(stats.summary.input_tokens + stats.summary.output_tokens)} detail={`${formatTokens(stats.summary.input_tokens)} 输入 · ${formatCacheHitRate(stats.summary.cache_input_tokens, stats.summary.cached_tokens)} 缓存`} />
         <Metric label="消耗金额" value={formatUsd(stats.summary.estimated_cost_usd)} detail="累计消耗" />
         <Metric label="平均耗时" value={formatDuration(stats.summary.avg_duration_ms)} detail={`首字 ${formatDuration(stats.summary.avg_ttft_ms)}`} />
       </section>
@@ -63,14 +63,15 @@ export function StatsPage({ initial, setNotice }: { initial: Stats; setNotice: (
           <div className="quality-list">
             <div><span><GitCompareArrows size={16} />故障转移</span><strong>{stats.summary.failovers || 0}</strong></div>
             <div><span><Clock3 size={16} />平均首字</span><strong>{formatDuration(stats.summary.avg_ttft_ms)}</strong></div>
+            <div><span><BarChart3 size={16} />缓存命中</span><strong>{formatCacheHitRate(stats.summary.cache_input_tokens, stats.summary.cached_tokens)}</strong></div>
             <div><span><BarChart3 size={16} />完成请求</span><strong>{stats.summary.completed || 0}</strong></div>
           </div>
         </section>
       </div>
       <section className="table-shell provider-stats-table">
         <header className="table-title"><div><h2>中转对比</h2></div></header>
-        <table><thead><tr><th>中转</th><th>上游调用</th><th>成功率</th><th>平均耗时</th><th>Token</th><th>消耗金额</th></tr></thead><tbody>
-          {stats.by_provider.map((item) => { const measured = Math.max(0, item.upstream_calls - (item.client_disconnected || 0) - (item.cancelled || 0) - (item.relay_cancelled || 0)); return <tr key={item.name}><td><strong>{item.name}</strong></td><td>{item.upstream_calls}</td><td>{measured ? Math.round((item.completed / measured) * 100) : 0}%</td><td>{formatDuration(item.avg_duration_ms)}</td><td>{formatTokens(item.tokens)}</td><td>{formatUsd(item.estimated_cost_usd)}</td></tr>; })}
+        <table><thead><tr><th>中转</th><th>上游调用</th><th>成功率</th><th>平均耗时</th><th>Token</th><th>缓存率</th><th>消耗金额</th></tr></thead><tbody>
+          {stats.by_provider.map((item) => { const measured = Math.max(0, item.upstream_calls - (item.client_disconnected || 0) - (item.cancelled || 0) - (item.relay_cancelled || 0)); return <tr key={item.name}><td><strong>{item.name}</strong></td><td>{item.upstream_calls}</td><td>{measured ? Math.round((item.completed / measured) * 100) : 0}%</td><td>{formatDuration(item.avg_duration_ms)}</td><td>{formatTokens(item.tokens)}</td><td>{formatCacheHitRate(item.cache_input_tokens, item.cached_tokens)}</td><td>{formatUsd(item.estimated_cost_usd)}</td></tr>; })}
         </tbody></table>
       </section>
     </div>

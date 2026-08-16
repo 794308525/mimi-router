@@ -43,6 +43,15 @@ export type RouterSettings = {
   first_token_timeout_ms: number;
   first_token_timeout_policy: "off" | "fixed" | "adaptive";
   first_token_timeout_mode: "retry_then_switch" | "switch" | "race_same" | "race_different";
+  adaptive_first_token_preview?: {
+    timeout_ms: number;
+    baseline_ms: number | null;
+    sample_count: number;
+    source: "24h" | "7d" | "fallback";
+    provider_id: string | null;
+    provider_name: string | null;
+    requested_model: string | null;
+  };
 };
 
 export type BenchmarkSample = {
@@ -225,6 +234,8 @@ export type StatsSummary = {
   running: number;
   input_tokens: number;
   output_tokens: number;
+  cached_tokens: number;
+  cache_input_tokens: number;
   estimated_cost_usd: number;
   partial_cost: number;
   unknown_cost: number;
@@ -241,6 +252,8 @@ export type StatsHourlyPoint = {
   errors: number;
   avg_ttft_ms: number | null;
   tokens: number;
+  cached_tokens: number;
+  cache_input_tokens: number;
   estimated_cost_usd: number;
 };
 
@@ -256,6 +269,8 @@ export type ProviderStats = {
   avg_duration_ms: number | null;
   avg_ttft_ms: number | null;
   tokens: number;
+  cached_tokens: number;
+  cache_input_tokens: number;
   estimated_cost_usd: number;
 };
 
@@ -280,6 +295,8 @@ export type Stats = {
     errors: number;
     avg_ttft_ms: number | null;
     tokens: number;
+    cached_tokens: number;
+    cache_input_tokens: number;
     estimated_cost_usd: number;
   }>;
   hourly: StatsHourlyPoint[];

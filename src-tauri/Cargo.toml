@@ -1,6 +1,6 @@
 [package]
 name = "codex-relay-router"
-version = "0.2.3"
+version = "0.2.13"
 description = "Codex local relay routing desktop manager"
 authors = ["Chen"]
 edition = "2021"

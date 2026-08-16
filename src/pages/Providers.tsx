@@ -2,10 +2,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { CircleGauge, Eye, EyeOff, Gauge, GripVertical, KeyRound, MoreHorizontal, Plus, RefreshCcw, Save, Server, Trash2 } from "lucide-react";
 import { api } from "../api";
-import type { Notice, Provider, RouteGroup } from "../types";
+import type { Notice, Provider, RouteGroup, Stats } from "../types";
 import { DEFAULT_TEST_MODEL } from "../types";
-import { EmptyState, Modal, PageHeader, ProviderStatus, formatTime } from "../components/Common";
+import { EmptyState, ExternalLink, Modal, PageHeader, ProviderStatus, formatCacheHitRate, formatDuration, formatTime, formatUsd } from "../components/Common";
 import { BenchmarkDialog } from "../components/BenchmarkDialog";
+
+const PROVIDER_TABLE_NAMES_VISIBLE_KEY = "mimi-router.provider-table-names-visible";
 
 type ProviderForm = {
   name: string;
@@ -20,6 +22,8 @@ type ProviderForm = {
   headers_text: string;
   enabled: boolean;
 };
+
+type ProviderStatsRange = "today" | "yesterday" | "seven_days";
 
 const emptyForm: ProviderForm = {
   name: "",
@@ -38,11 +42,13 @@ const emptyForm: ProviderForm = {
 export function ProvidersPage({
   providers,
   groups,
+  stats,
   onRefresh,
   setNotice,
 }: {
   providers: Provider[];
   groups: RouteGroup[];
+  stats: Stats;
   onRefresh: () => Promise<void>;
   setNotice: (notice: Notice) => void;
 }) {
@@ -50,6 +56,8 @@ export function ProvidersPage({
   const [form, setForm] = useState<ProviderForm>(emptyForm);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState<string | null>(null);
+  const [testingAll, setTestingAll] = useState(false);
+  const [resettingAll, setResettingAll] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
   const [loadingSecret, setLoadingSecret] = useState(false);
   const [benchmarkOpen, setBenchmarkOpen] = useState(false);
@@ -57,6 +65,8 @@ export function ProvidersPage({
   const [maxAttempts, setMaxAttempts] = useState(3);
   const [providerRetryAttempts, setProviderRetryAttempts] = useState(2);
   const [savingRoute, setSavingRoute] = useState(false);
+  const [statsRange, setStatsRange] = useState<ProviderStatsRange>("today");
+  const [providerNamesVisible, setProviderNamesVisible] = useState(readProviderNamesVisible);
   const [draftOrder, setDraftOrder] = useState<string[]>([]);
   const [draggingProvider, setDraggingProvider] = useState<string | null>(null);
   const [dragOverProvider, setDragOverProvider] = useState<string | null>(null);
@@ -80,6 +90,10 @@ export function ProvidersPage({
     const included = new Set(fromDraft.map((provider) => provider.id));
     return [...fromDraft, ...routeOrdered.filter((provider) => !included.has(provider.id))];
   }, [draftOrder, providers, routeOrdered]);
+  const providerUsageByName = useMemo(
+    () => new Map((stats.provider_periods[statsRange] ?? []).map((item) => [item.name, item])),
+    [stats.provider_periods, statsRange],
+  );
 
   useEffect(() => {
     if (!primaryGroup) return;
@@ -178,6 +192,25 @@ export function ProvidersPage({
     }
   };
 
+  const testAll = async () => {
+    setTestingAll(true);
+    try {
+      const results = await Promise.allSettled(providers.map((provider) => api.testProvider(provider.id)));
+      const failed = results.filter((result) => result.status === "rejected").length;
+      await onRefresh();
+      setNotice({
+        type: failed > 0 ? "error" : "success",
+        message: failed > 0
+          ? `全测完成：${results.length - failed} 个通过，${failed} 个失败`
+          : `全测完成：${results.length} 个中转全部通过`,
+      });
+    } catch (error) {
+      setNotice({ type: "error", message: error instanceof Error ? error.message : "全部检测失败" });
+    } finally {
+      setTestingAll(false);
+    }
+  };
+
   const toggle = async (provider: Provider) => {
     try {
       await api.updateProvider(provider.id, { enabled: !provider.enabled });
@@ -203,6 +236,27 @@ export function ProvidersPage({
     await api.resetCircuit(provider.id);
     await onRefresh();
     setNotice({ type: "success", message: `${provider.name} 的熔断状态已重置` });
+  };
+
+  const resetAllCircuits = async () => {
+    const targets = providers.filter((provider) => provider.circuit_state !== "closed");
+    if (targets.length === 0) return;
+    setResettingAll(true);
+    try {
+      const results = await Promise.allSettled(targets.map((provider) => api.resetCircuit(provider.id)));
+      const failed = results.filter((result) => result.status === "rejected").length;
+      await onRefresh();
+      setNotice({
+        type: failed > 0 ? "error" : "success",
+        message: failed > 0
+          ? `全恢复完成：${results.length - failed} 个已恢复，${failed} 个失败`
+          : `已恢复 ${results.length} 个中转的熔断状态`,
+      });
+    } catch (error) {
+      setNotice({ type: "error", message: error instanceof Error ? error.message : "全部恢复失败" });
+    } finally {
+      setResettingAll(false);
+    }
   };
 
   const routePayload = (providerOrder: Provider[]) => {
@@ -360,10 +414,23 @@ export function ProvidersPage({
       {primaryGroup && providers.length > 0 && (
         <section className="provider-route-strip">
           <div className="provider-route-copy"><strong>调用策略</strong><span>按列表顺序调用，异常时自动尝试下一中转</span></div>
+          <div className="provider-stats-range" role="radiogroup" aria-label="中转统计时间范围">
+            {([
+              ["today", "今日"],
+              ["yesterday", "昨日"],
+              ["seven_days", "7 日"],
+            ] as const).map(([range, label]) => (
+              <button key={range} type="button" role="radio" aria-checked={statsRange === range} className={statsRange === range ? "active" : ""} onClick={() => setStatsRange(range)}>{label}</button>
+            ))}
+          </div>
           <div className="provider-route-switch"><span>故障转移</span><label className="switch" title={failoverEnabled ? "关闭故障转移" : "开启故障转移"}><input type="checkbox" aria-label="故障转移" checked={failoverEnabled} onChange={(event) => setFailoverEnabled(event.target.checked)} /><span /></label></div>
           <label className="provider-route-attempts"><span>最大尝试</span><input type="number" min="1" max="10" value={maxAttempts} onChange={(event) => setMaxAttempts(Math.min(10, Math.max(1, Number(event.target.value) || 1)))} /></label>
           <label className="provider-route-attempts"><span>同渠道重试</span><input type="number" min="0" max="10" value={providerRetryAttempts} onChange={(event) => setProviderRetryAttempts(Math.min(10, Math.max(0, Number(event.target.value) || 0)))} /></label>
-          <button className="button button-secondary button-small" type="button" onClick={() => void saveRoute()} disabled={savingRoute}><Save size={14} />{savingRoute ? "保存中" : "保存"}</button>
+          <div className="provider-route-actions">
+            <button className="button button-secondary button-small" type="button" title="并发流式检测全部中转" onClick={() => void testAll()} disabled={testingAll || testing !== null || resettingAll}><RefreshCcw size={14} className={testingAll ? "spin" : ""} />{testingAll ? "检测中" : "全测"}</button>
+            <button className="button button-secondary button-small" type="button" title="重置全部熔断状态" onClick={() => void resetAllCircuits()} disabled={resettingAll || testingAll || testing !== null || providers.every((provider) => provider.circuit_state === "closed")}><CircleGauge size={14} className={resettingAll ? "spin" : ""} />{resettingAll ? "恢复中" : "全恢复"}</button>
+            <button className="button button-secondary button-small" type="button" onClick={() => void saveRoute()} disabled={savingRoute}><Save size={14} />{savingRoute ? "保存中" : "保存"}</button>
+          </div>
         </section>
       )}
 
@@ -374,22 +441,45 @@ export function ProvidersPage({
           action={<button className="button button-primary" type="button" onClick={openNew}><Plus size={16} />添加中转</button>}
         />
       ) : (
-        <section className="table-shell">
-          <table>
+        <section className="table-shell providers-table-shell">
+          <table className="providers-table">
             <thead>
               <tr>
                 <th>调用顺序</th>
-                <th>中转</th>
+                <th>
+                  <span className="provider-name-heading">
+                    中转
+                    <button
+                      className="icon-button provider-table-privacy-button"
+                      type="button"
+                      title={providerNamesVisible ? "隐藏中转名称和地址" : "显示中转名称和地址"}
+                      aria-label={providerNamesVisible ? "隐藏中转名称和地址" : "显示中转名称和地址"}
+                      aria-pressed={!providerNamesVisible}
+                      onClick={() => {
+                        const visible = !providerNamesVisible;
+                        setProviderNamesVisible(visible);
+                        saveProviderNamesVisible(visible);
+                      }}
+                    >
+                      {providerNamesVisible ? <Eye size={14} /> : <EyeOff size={14} />}
+                    </button>
+                  </span>
+                </th>
                 <th>检测模型</th>
                 <th>测评倍率</th>
                 <th>状态</th>
                 <th>失败</th>
                 <th>最近成功</th>
+                <th>时段统计</th>
                 <th className="align-right">操作</th>
               </tr>
             </thead>
             <tbody>
-              {ordered.map((provider, index) => (
+              {ordered.map((provider, index) => {
+                const usage = providerUsageByName.get(provider.name);
+                const measured = usage ? usage.completed + usage.errors : 0;
+                const errorRate = measured && usage ? Math.round((usage.errors / measured) * 100) : 0;
+                return (
                 <tr
                   key={provider.id}
                   data-provider-id={provider.id}
@@ -409,10 +499,17 @@ export function ProvidersPage({
                     </div>
                   </td>
                   <td>
-                    <button className="table-primary" type="button" onClick={() => openEdit(provider)}>
-                      <span className="provider-monogram"><Server size={16} /></span>
-                      <span><strong>{provider.name}</strong><small>{provider.base_url}</small></span>
-                    </button>
+                    {providerNamesVisible ? (
+                      <ExternalLink className="table-primary" href={providerHomepageUrl(provider.base_url)} title={`打开 ${providerHomepageUrl(provider.base_url)}`}>
+                        <span className="provider-monogram"><Server size={16} /></span>
+                        <span><strong>{provider.name}</strong><small>{provider.base_url}</small></span>
+                      </ExternalLink>
+                    ) : (
+                      <span className="table-primary provider-table-masked">
+                        <span className="provider-monogram"><Server size={16} /></span>
+                        <span><strong>渠道 {index + 1}</strong></span>
+                      </span>
+                    )}
                   </td>
                   <td><code className="model-code">{provider.test_model}</code></td>
                   <td><span className="tabular">{formatMultiplier(provider.cost_multiplier)}</span></td>
@@ -428,12 +525,21 @@ export function ProvidersPage({
                   <td><span className="tabular">{provider.consecutive_failures}/{provider.failure_threshold}</span></td>
                   <td>{formatTime(provider.last_success_at)}</td>
                   <td>
+                    <div className="provider-period-stats">
+                      <span>请求 <strong>{usage?.upstream_calls ?? 0}</strong></span>
+                      <span>平均首字 <strong>{formatDuration(usage?.avg_ttft_ms)}</strong></span>
+                      <span>错误率 <strong>{errorRate}%</strong></span>
+                      <span>消费 <strong>{formatUsd(usage?.estimated_cost_usd ?? 0)}</strong></span>
+                      <span>缓存 <strong>{formatCacheHitRate(usage?.cache_input_tokens ?? 0, usage?.cached_tokens ?? 0)}</strong></span>
+                    </div>
+                  </td>
+                  <td>
                     <div className="row-actions">
-                      <button className="icon-button" type="button" title={`流式检测 ${provider.test_model}`} onClick={() => test(provider)} disabled={testing === provider.id}>
-                        <RefreshCcw size={16} className={testing === provider.id ? "spin" : ""} />
+                      <button className="icon-button" type="button" title={`流式检测 ${provider.test_model}`} onClick={() => test(provider)} disabled={testing === provider.id || testingAll || resettingAll}>
+                        <RefreshCcw size={16} className={testing === provider.id || testingAll ? "spin" : ""} />
                       </button>
                       {provider.circuit_state !== "closed" && (
-                        <button className="icon-button" type="button" title="重置熔断" onClick={() => resetCircuit(provider)}>
+                        <button className="icon-button" type="button" title="重置熔断" onClick={() => resetCircuit(provider)} disabled={resettingAll || testingAll}>
                           <CircleGauge size={16} />
                         </button>
                       )}
@@ -443,7 +549,8 @@ export function ProvidersPage({
                     </div>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </section>
@@ -514,4 +621,28 @@ function formatMultiplier(value: number) {
 
 function sameOrder(left: string[], right: string[]) {
   return left.length === right.length && left.every((id, index) => id === right[index]);
+}
+
+function providerHomepageUrl(baseUrl: string) {
+  try {
+    return new URL(baseUrl).origin;
+  } catch {
+    return baseUrl;
+  }
+}
+
+function readProviderNamesVisible() {
+  try {
+    return localStorage.getItem(PROVIDER_TABLE_NAMES_VISIBLE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function saveProviderNamesVisible(visible: boolean) {
+  try {
+    localStorage.setItem(PROVIDER_TABLE_NAMES_VISIBLE_KEY, visible ? "1" : "0");
+  } catch {
+    // The privacy switch still works for the current session when storage is unavailable.
+  }
 }

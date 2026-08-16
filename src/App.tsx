@@ -168,7 +168,7 @@ export default function App() {
         </div>
         <NoticeBar notice={notice} onClose={() => setNotice(null)} />
         {page === "overview" && <Overview service={data.service} providers={data.providers} routeGroup={data.routes.groups[0] ?? null} requests={data.requests} stats={data.stats} routerSettings={data.router_settings} onNavigate={navigate} onOpenRequest={openRequest} setNotice={setNotice} />}
-        {page === "providers" && <ProvidersPage providers={data.providers} groups={data.routes.groups} onRefresh={load} setNotice={setNotice} />}
+        {page === "providers" && <ProvidersPage providers={data.providers} groups={data.routes.groups} stats={data.stats} onRefresh={load} setNotice={setNotice} />}
         {page === "requests" && <RequestsPage requests={data.requests} providers={data.providers} onRefresh={load} setNotice={setNotice} initialDetail={selectedRequest} onDetailClosed={() => setSelectedRequest(null)} />}
         {page === "settings" && <SettingsPage codex={data.codex} pricing={data.pricing} setNotice={setNotice} />}
         {page === "about" && <AboutPage />}
