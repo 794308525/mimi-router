@@ -15,7 +15,7 @@ const changelogZh = readFileSync(resolve(root, "CHANGELOG.zh-CN.md"), "utf8");
 const changelogEn = readFileSync(resolve(root, "CHANGELOG.md"), "utf8");
 
 const cargoTomlVersion = cargoToml.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
-const cargoLockVersion = cargoLock.match(/name = "codex-relay-router"\nversion = "([^"]+)"/)?.[1];
+const cargoLockVersion = cargoLock.match(/name = "codex-relay-router"\r?\nversion = "([^"]+)"/)?.[1];
 const versions = new Map([
   ["package.json", packageJson.version],
   ["package-lock.json", packageLock.version],

@@ -1,6 +1,18 @@
 {
-  "currentVersion": "0.2.2",
+  "currentVersion": "0.2.3",
   "releases": [
+    {
+      "version": "0.2.3",
+      "date": "2026-08-16",
+      "notes": {
+        "zh-CN": [
+          "修复 Windows 使用 CRLF 换行时版本检查误判，恢复 Windows 安装包构建。"
+        ],
+        "en": [
+          "Fixed false version-check failures with CRLF line endings so Windows installer builds can complete."
+        ]
+      }
+    },
     {
       "version": "0.2.2",
       "date": "2026-08-16",

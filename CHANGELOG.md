@@ -2,6 +2,10 @@
 
 This project follows semantic versioning. Every feature update must keep the application version and both language variants of the release notes in sync.
 
+## 0.2.3 - 2026-08-16
+
+- Fixed false version-check failures with CRLF line endings so Windows installer builds can complete.
+
 ## 0.2.2 - 2026-08-16
 
 - Request history now captures reasoning effort and the model actually returned by upstream responses across streaming, non-streaming, and race requests.
