@@ -4,6 +4,10 @@ import { join } from "node:path";
 
 const SERVICE = "com.codex-relay-router.provider";
 
+function useKeychain() {
+  return process.platform === "darwin" && process.env.CODEX_ROUTER_SECRET_BACKEND !== "file";
+}
+
 function fallbackPath(dataDir) {
   return join(dataDir, "secrets.json");
 }
@@ -26,11 +30,11 @@ function writeFallback(dataDir, values) {
 }
 
 export function secretBackend() {
-  return process.platform === "darwin" ? "macOS Keychain" : "restricted file";
+  return useKeychain() ? "macOS Keychain" : "restricted file";
 }
 
 export function setSecret(dataDir, providerId, value) {
-  if (process.platform === "darwin") {
+  if (useKeychain()) {
     execFileSync("security", [
       "add-generic-password",
       "-U",
@@ -49,7 +53,7 @@ export function setSecret(dataDir, providerId, value) {
 }
 
 export function getSecret(dataDir, providerId) {
-  if (process.platform === "darwin") {
+  if (useKeychain()) {
     try {
       return execFileSync(
         "security",
@@ -64,7 +68,7 @@ export function getSecret(dataDir, providerId) {
 }
 
 export function deleteSecret(dataDir, providerId) {
-  if (process.platform === "darwin") {
+  if (useKeychain()) {
     try {
       execFileSync(
         "security",
@@ -80,4 +84,3 @@ export function deleteSecret(dataDir, providerId) {
   delete values[providerId];
   writeFallback(dataDir, values);
 }
-

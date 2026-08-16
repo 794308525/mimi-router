@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { mkdirSync, statSync } from "node:fs";
 import { networkInterfaces } from "node:os";
 import { resolve } from "node:path";
@@ -34,9 +35,12 @@ const dataDir = resolve(process.env.CODEX_ROUTER_DATA_DIR || `${projectRoot}/dat
 const host = process.env.CODEX_ROUTER_HOST || "0.0.0.0";
 const port = Number(process.env.CODEX_ROUTER_PORT || 18080);
 const startedAt = new Date().toISOString();
+const ROUTER_API_KEY_SECRET_ID = "router-api-key";
 
 mkdirSync(dataDir, { recursive: true });
 const db = createDatabase(dataDir);
+let routerAuthEnabled = getRouterSettings(db).api_auth_enabled;
+let routerApiKey = loadOrCreateRouterApiKey();
 const engine = new RouterEngine(db, dataDir, publish);
 const benchmarks = new BenchmarkService(db, dataDir, publish);
 let pricingSyncPromise = null;
@@ -56,6 +60,18 @@ const server = createServer(async (req, res) => {
 
   const url = new URL(req.url || "/", `http://${req.headers.host || `${host}:${port}`}`);
   try {
+    if (url.pathname.startsWith("/v1/") && routerAuthEnabled && !hasValidRouterApiKey(req)) {
+      req.resume();
+      res.setHeader("www-authenticate", 'Bearer realm="mimi-router"');
+      return json(res, 401, {
+        error: {
+          message: "Incorrect API key provided",
+          type: "invalid_request_error",
+          param: null,
+          code: "invalid_api_key",
+        },
+      });
+    }
     if (req.method === "GET" && url.pathname === "/health") {
       return json(res, 200, serviceInfo());
     }
@@ -124,8 +140,22 @@ async function handleApi(req, res, url) {
 
   if (req.method === "PUT" && url.pathname === "/api/router-settings") {
     const settings = saveRouterSettings(db, await bodyJson(req));
+    routerAuthEnabled = settings.api_auth_enabled;
     publish("router.settings_changed", { settings });
     return json(res, 200, settings);
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/router-auth/key") {
+    if (!isLocalManagementRequest(req)) return json(res, 403, { error: "网关 API Key 仅允许在本机查看" });
+    res.setHeader("cache-control", "no-store");
+    return json(res, 200, { api_key: routerApiKey });
+  }
+  if (req.method === "POST" && url.pathname === "/api/router-auth/reset") {
+    if (!isLocalManagementRequest(req)) return json(res, 403, { error: "网关 API Key 仅允许在本机重置" });
+    routerApiKey = generateRouterApiKey();
+    setSecret(dataDir, ROUTER_API_KEY_SECRET_ID, routerApiKey);
+    res.setHeader("cache-control", "no-store");
+    return json(res, 200, { api_key: routerApiKey });
   }
 
   if (req.method === "GET" && url.pathname === "/api/pricing") {
@@ -392,6 +422,26 @@ function isLocalManagementRequest(req) {
   if (!isLoopbackAddress(req.socket.remoteAddress)) return false;
   const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
   return !forwarded || isLoopbackAddress(forwarded);
+}
+
+function loadOrCreateRouterApiKey() {
+  const saved = getSecret(dataDir, ROUTER_API_KEY_SECRET_ID);
+  if (/^sk-[0-9a-f]{32}$/.test(saved)) return saved;
+  const generated = generateRouterApiKey();
+  setSecret(dataDir, ROUTER_API_KEY_SECRET_ID, generated);
+  return generated;
+}
+
+function generateRouterApiKey() {
+  return `sk-${randomBytes(16).toString("hex")}`;
+}
+
+function hasValidRouterApiKey(req) {
+  const match = String(req.headers.authorization || "").match(/^Bearer\s+(.+)$/i);
+  if (!match) return false;
+  const provided = Buffer.from(match[1].trim());
+  const expected = Buffer.from(routerApiKey);
+  return provided.length === expected.length && timingSafeEqual(provided, expected);
 }
 
 function isLoopbackAddress(address) {

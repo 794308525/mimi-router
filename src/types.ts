@@ -39,6 +39,7 @@ export type Provider = {
 };
 
 export type RouterSettings = {
+  api_auth_enabled: boolean;
   first_token_timeout_ms: number;
   first_token_timeout_policy: "off" | "fixed" | "adaptive";
   first_token_timeout_mode: "retry_then_switch" | "switch" | "race_same" | "race_different";

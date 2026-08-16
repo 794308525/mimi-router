@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { CheckCircle2, Database, DollarSign, HardDrive, Network, RefreshCcw, ShieldCheck, Trash2 } from "lucide-react";
+import { CheckCircle2, Database, DollarSign, ExternalLink as ExternalLinkIcon, Github, HardDrive, Network, RefreshCcw, ShieldCheck, Trash2 } from "lucide-react";
 import { api } from "../api";
 import type { CodexStatus, Notice, PricingCatalog, StorageUsage } from "../types";
-import { PageHeader } from "../components/Common";
+import { ExternalLink, PageHeader, PROJECT_HOMEPAGE } from "../components/Common";
 
 export function SettingsPage({
   codex: initialCodex,
@@ -118,6 +118,17 @@ export function SettingsPage({
           </table>
         </div>
         <p className="pricing-note">按 OpenAI Standard 计价；中转账单可能不同。</p>
+      </section>
+      <section className="settings-section">
+        <header><Github size={19} /><div><h2>产品来源</h2></div></header>
+        <div className="settings-rows">
+          <div>
+            <span>GitHub 仓库</span>
+            <ExternalLink href={PROJECT_HOMEPAGE} className="product-source-link">
+              <span>794308525/mimi-router</span><ExternalLinkIcon size={14} />
+            </ExternalLink>
+          </div>
+        </div>
       </section>
     </div>
   );

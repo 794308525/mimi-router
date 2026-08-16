@@ -46,10 +46,12 @@ code { font-family: "SFMono-Regular", Consolas, monospace; }
 .app-shell { min-height: 100vh; display: block; }
 .sidebar { position: fixed; inset: 0 0 auto 0; width: 100%; height: 64px; z-index: 30; display: grid; grid-template-columns: minmax(180px, 1fr) auto minmax(180px, 1fr); align-items: center; color: #596776; background: var(--sidebar); box-shadow: 0 3px 16px rgba(34, 51, 66, .05); }
 .sidebar-brand { height: 64px; justify-self: start; display: flex; align-items: center; gap: 10px; padding: 0 18px; border-bottom: 0; }
+.sidebar-brand-link { height: 100%; min-width: 0; display: flex; align-items: center; gap: 10px; color: inherit; text-decoration: none; }
+.sidebar-brand-link:hover strong { color: var(--accent-dark); }
 .brand-mark { width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center; color: #fff; background: linear-gradient(135deg, #20a66a 8%, #35c98a 58%, #3f6ff3 132%); border-radius: 9px; box-shadow: 0 5px 13px rgba(32, 166, 106, .22); flex: none; }
 .brand-mark.brand-icon { overflow: hidden; background: #dff4fc; box-shadow: 0 5px 13px rgba(62, 145, 190, .2); }
 .brand-mark.brand-icon img { width: 100%; height: 100%; display: block; object-fit: cover; }
-.sidebar-brand > span:nth-child(2) { display: flex; flex-direction: column; min-width: 0; }
+.sidebar-brand-link > span:nth-child(2) { display: flex; flex-direction: column; min-width: 0; }
 .sidebar-brand strong { font-size: 13px; color: var(--text); letter-spacing: 0; }
 .sidebar-brand small { margin-top: 2px; color: var(--faint); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
 .sidebar nav { justify-self: center; display: flex; flex-direction: row; align-items: center; gap: 3px; padding: 0; }
@@ -99,6 +101,12 @@ code { font-family: "SFMono-Regular", Consolas, monospace; }
 .gateway-address > span { color: var(--faint); font-size: 10px; white-space: nowrap; }
 .gateway-address code { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: #465463; font-size: 11px; white-space: nowrap; }
 .gateway-address .icon-button { width: 28px; height: 28px; }
+.router-auth-control { min-width: 0; padding-left: 12px; display: flex; align-items: center; gap: 5px; border-left: 1px solid var(--line); }
+.router-auth-control > span { color: var(--faint); font-size: 10px; white-space: nowrap; }
+.router-auth-control code { width: 132px; padding: 6px 8px; overflow: hidden; border: 1px solid var(--line); border-radius: 6px; color: #465463; background: #fff; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.router-auth-control .icon-button { width: 28px; height: 28px; }
+.router-key-reset-confirm > p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.router-key-reset-confirm .form-footer { margin-top: 20px; }
 .dashboard-heading { align-items: center; }
 .overview-page { padding-top: 24px; }
 .overview-page .service-strip { min-height: 44px; margin-top: -24px; margin-bottom: 17px; }
@@ -566,6 +574,8 @@ input:disabled, select:disabled { background: #edf0f1; }
 .pricing-table td:first-child strong { color: var(--text); font-size: 11px; }
 .pricing-table td:first-child small { margin-top: 3px; color: var(--faint); font-size: 10px; }
 .pricing-note { margin: 10px 2px 0 !important; color: var(--faint) !important; line-height: 1.55; }
+.product-source-link { min-width: 0; display: inline-flex; align-items: center; gap: 6px; color: var(--tech); font-size: 11px; font-weight: 650; text-decoration: none; }
+.product-source-link:hover { color: #245bd7; text-decoration: underline; }
 
 /* 首页轻量化：用留白和字体层级替代连续卡片边框。 */
 .overview-page { padding-right: 38px; padding-bottom: 58px; padding-left: 38px; }
@@ -734,6 +744,8 @@ input:disabled, select:disabled { background: #edf0f1; }
   .gateway-addresses { width: 100%; margin-left: 0; display: flex; align-items: flex-start; flex-direction: column; gap: 7px; }
   .gateway-address { width: 100%; }
   .gateway-address code { max-width: none; min-width: 0; flex: 1; }
+  .router-auth-control { width: 100%; padding-left: 0; border-left: 0; }
+  .router-auth-control code { min-width: 0; width: auto; flex: 1; }
   .page-header, .dashboard-heading { align-items: flex-start; flex-direction: column; }
   .page:not(.overview-page) .page-header { align-items: flex-start; flex-direction: column; }
   .page-actions { width: 100%; justify-content: flex-start; }

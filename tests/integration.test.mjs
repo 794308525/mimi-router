@@ -27,6 +27,7 @@ before(async () => {
       ...process.env,
       CODEX_ROUTER_PORT: String(gatewayPort),
       CODEX_ROUTER_DATA_DIR: dataDir,
+      CODEX_ROUTER_SECRET_BACKEND: "file",
     },
     stdio: "ignore",
   });
@@ -125,6 +126,48 @@ test("serves the Codex model catalog without creating a usage record", async () 
   }
   const after = await get("/api/requests?limit=100");
   assert.equal(after.length, before.length);
+});
+
+test("enforces OpenAI-compatible bearer authentication when enabled", async () => {
+  const originalSettings = (await get("/api/bootstrap")).router_settings;
+  const { api_key: originalKey } = await get("/api/router-auth/key");
+  assert.match(originalKey, /^sk-[0-9a-f]{32}$/);
+
+  await put("/api/router-settings", { api_auth_enabled: true });
+  try {
+    const missing = await fetch(`http://127.0.0.1:${gatewayPort}/v1/models`);
+    const missingBody = await missing.json();
+    assert.equal(missing.status, 401);
+    assert.equal(missing.headers.get("www-authenticate"), 'Bearer realm="mimi-router"');
+    assert.equal(missingBody.error.type, "invalid_request_error");
+    assert.equal(missingBody.error.code, "invalid_api_key");
+
+    const wrong = await fetch(`http://127.0.0.1:${gatewayPort}/v1/models`, {
+      headers: { authorization: "Bearer sk-00000000000000000000000000000000" },
+    });
+    assert.equal(wrong.status, 401);
+
+    const authorized = await fetch(`http://127.0.0.1:${gatewayPort}/v1/models`, {
+      headers: { authorization: `Bearer ${originalKey}` },
+    });
+    assert.equal(authorized.status, 200);
+
+    const { api_key: resetKey } = await post("/api/router-auth/reset", {});
+    assert.match(resetKey, /^sk-[0-9a-f]{32}$/);
+    assert.notEqual(resetKey, originalKey);
+    const oldKey = await fetch(`http://127.0.0.1:${gatewayPort}/v1/models`, {
+      headers: { authorization: `Bearer ${originalKey}` },
+    });
+    assert.equal(oldKey.status, 401);
+    const newKey = await fetch(`http://127.0.0.1:${gatewayPort}/v1/models`, {
+      headers: { authorization: `Bearer ${resetKey}` },
+    });
+    assert.equal(newKey.status, 200);
+
+    assert.equal((await get("/api/service")).status, "running");
+  } finally {
+    await put("/api/router-settings", originalSettings);
+  }
 });
 
 test("routes compact requests and skips providers that do not support the endpoint", async () => {

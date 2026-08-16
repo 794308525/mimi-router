@@ -69,6 +69,8 @@ export const api = {
   cancelRequest: (id: string) => request<{ ok: boolean }>(`/api/requests/${id}/cancel`, { method: "POST" }),
   updateRouterSettings: (body: Partial<RouterSettings>) =>
     request<RouterSettings>("/api/router-settings", { method: "PUT", body: JSON.stringify(body) }),
+  routerAuthKey: () => request<{ api_key: string }>("/api/router-auth/key"),
+  resetRouterAuthKey: () => request<{ api_key: string }>("/api/router-auth/reset", { method: "POST" }),
   clearRequests: () => request<{ deleted: number }>("/api/requests", { method: "DELETE" }),
   stats: (days: number) => request<Stats>(`/api/stats?days=${days}`),
   syncPricing: () => request<PricingCatalog>("/api/pricing/sync", { method: "POST" }),

@@ -238,18 +238,22 @@ test("stores official model additions and price changes", () => {
 });
 
 test("persists first-token timeout policy and handling mode with safe defaults", () => {
+  assert.equal(getRouterSettings(db).api_auth_enabled, false);
   assert.equal(getRouterSettings(db).first_token_timeout_policy, "off");
   assert.equal(getRouterSettings(db).first_token_timeout_mode, "retry_then_switch");
   const saved = saveRouterSettings(db, {
+    api_auth_enabled: true,
     first_token_timeout_policy: "adaptive",
     first_token_timeout_mode: "race_same",
     first_token_timeout_ms: 45,
   });
+  assert.equal(saved.api_auth_enabled, true);
   assert.equal(saved.first_token_timeout_policy, "adaptive");
   assert.equal(saved.first_token_timeout_mode, "race_same");
   assert.equal(saved.first_token_timeout_ms, 45);
   assert.equal(saveRouterSettings(db, { first_token_timeout_policy: "unknown" }).first_token_timeout_policy, "adaptive");
   assert.equal(saveRouterSettings(db, { first_token_timeout_mode: "unknown" }).first_token_timeout_mode, "race_same");
+  assert.equal(getRouterSettings(db).api_auth_enabled, true);
 });
 
 test("derives adaptive first-token timeouts from a trimmed provider and model baseline", () => {

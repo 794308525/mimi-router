@@ -183,6 +183,7 @@ export function createDatabase(dataDir) {
 
     CREATE TABLE IF NOT EXISTS router_settings (
       id INTEGER PRIMARY KEY CHECK (id = 1),
+      api_auth_enabled INTEGER NOT NULL DEFAULT 0,
       first_token_timeout_enabled INTEGER NOT NULL DEFAULT 0,
       first_token_timeout_ms INTEGER NOT NULL DEFAULT 30000,
       first_token_timeout_policy TEXT NOT NULL DEFAULT 'off',
@@ -208,6 +209,7 @@ export function createDatabase(dataDir) {
   ensureColumn(db, "providers", "cost_multiplier", "REAL NOT NULL DEFAULT 1");
   ensureColumn(db, "route_groups", "provider_retry_attempts", "INTEGER NOT NULL DEFAULT 2");
   ensureColumn(db, "providers", "consecutive_slow_first_tokens", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "router_settings", "api_auth_enabled", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "router_settings", "first_token_timeout_policy", "TEXT NOT NULL DEFAULT 'off'");
   ensureColumn(db, "router_settings", "first_token_timeout_mode", "TEXT NOT NULL DEFAULT 'retry_then_switch'");
   ensureColumn(db, "requests", "headers_at", "TEXT");
@@ -255,8 +257,8 @@ export function createDatabase(dataDir) {
 
   db.prepare(`
     INSERT OR IGNORE INTO router_settings
-      (id, first_token_timeout_enabled, first_token_timeout_ms, first_token_timeout_policy, first_token_timeout_mode, updated_at)
-    VALUES (1, 0, 30000, 'off', 'retry_then_switch', ?)
+      (id, api_auth_enabled, first_token_timeout_enabled, first_token_timeout_ms, first_token_timeout_policy, first_token_timeout_mode, updated_at)
+    VALUES (1, 0, 0, 30000, 'off', 'retry_then_switch', ?)
   `).run(now());
 
   db.prepare(
@@ -631,6 +633,7 @@ export function getRouterSettings(db) {
   const row = db.prepare("SELECT * FROM router_settings WHERE id = 1").get();
   const policy = normalizeFirstTokenTimeoutPolicy(row?.first_token_timeout_policy);
   return {
+    api_auth_enabled: Boolean(row?.api_auth_enabled),
     first_token_timeout_ms: positiveInt(row?.first_token_timeout_ms, 30000),
     first_token_timeout_policy: policy,
     first_token_timeout_mode: normalizeFirstTokenTimeoutMode(row?.first_token_timeout_mode),
@@ -639,6 +642,9 @@ export function getRouterSettings(db) {
 
 export function saveRouterSettings(db, input) {
   const current = getRouterSettings(db);
+  const apiAuthEnabled = input.api_auth_enabled == null
+    ? current.api_auth_enabled
+    : Boolean(input.api_auth_enabled);
   const timeoutMs = Math.min(
     positiveInt(input.first_token_timeout_ms, current.first_token_timeout_ms),
     600000,
@@ -652,10 +658,10 @@ export function saveRouterSettings(db, input) {
     ? requestedMode
     : current.first_token_timeout_mode;
   db.prepare(`
-    UPDATE router_settings SET first_token_timeout_enabled = ?,
+    UPDATE router_settings SET api_auth_enabled = ?, first_token_timeout_enabled = ?,
       first_token_timeout_ms = ?, first_token_timeout_policy = ?,
       first_token_timeout_mode = ?, updated_at = ? WHERE id = 1
-  `).run(policy === "off" ? 0 : 1, timeoutMs, policy, mode, now());
+  `).run(apiAuthEnabled ? 1 : 0, policy === "off" ? 0 : 1, timeoutMs, policy, mode, now());
   return getRouterSettings(db);
 }
 

@@ -12,7 +12,7 @@ import {
 import appIcon from "./app-icon.png";
 import { api, subscribeEvents } from "./api";
 import type { Bootstrap, Notice, Provider, RequestRecord } from "./types";
-import { NoticeBar } from "./components/Common";
+import { ExternalLink, NoticeBar, PROJECT_HOMEPAGE } from "./components/Common";
 import { Overview } from "./pages/Overview";
 import { ProvidersPage } from "./pages/Providers";
 import { RequestsPage } from "./pages/Requests";
@@ -134,8 +134,10 @@ export default function App() {
     <div className="app-shell">
       <aside className={`sidebar ${mobileNav ? "open" : ""}`}>
         <div className="sidebar-brand">
-          <span className="brand-mark brand-icon"><img src={appIcon} alt="" /></span>
-          <span><strong>咪咪 Router</strong><small>Local gateway</small></span>
+          <ExternalLink href={PROJECT_HOMEPAGE} className="sidebar-brand-link" title="打开咪咪 Router GitHub 仓库">
+            <span className="brand-mark brand-icon"><img src={appIcon} alt="" /></span>
+            <span><strong>咪咪 Router</strong><small>Local gateway</small></span>
+          </ExternalLink>
           <button className="mobile-close icon-button" type="button" onClick={() => setMobileNav(false)}><X size={18} /></button>
         </div>
         <nav>

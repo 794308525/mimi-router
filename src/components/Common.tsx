@@ -1,6 +1,38 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { AlertCircle, CheckCircle2, X } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Notice, Provider, RequestRecord } from "../types";
+
+export const PROJECT_HOMEPAGE = "https://github.com/794308525/mimi-router";
+
+export function ExternalLink({
+  href,
+  className = "",
+  title,
+  children,
+}: {
+  href: string;
+  className?: string;
+  title?: string;
+  children: ReactNode;
+}) {
+  return (
+    <a
+      href={href}
+      className={className}
+      target="_blank"
+      rel="noreferrer"
+      title={title}
+      onClick={(event) => {
+        if (!("__TAURI_INTERNALS__" in window)) return;
+        event.preventDefault();
+        void openUrl(href).catch(() => window.open(href, "_blank", "noopener,noreferrer"));
+      }}
+    >
+      {children}
+    </a>
+  );
+}
 
 export function PageHeader({
   eyebrow,

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowRight, Ban, Check, CircleHelp, Clock3, Copy, Route } from "lucide-react";
+import { ArrowRight, Ban, Check, CircleHelp, Clock3, Copy, RotateCcw, Route } from "lucide-react";
 import { api } from "../api";
 import type { Notice, Provider, RequestRecord, RouteGroup, RouterSettings, ServiceInfo, Stats } from "../types";
 import { ACTIVE_REQUEST_STATES } from "../types";
@@ -52,12 +52,34 @@ export function Overview({
   const [firstTokenMode, setFirstTokenMode] = useState(routerSettings.first_token_timeout_mode);
   const [savingFirstToken, setSavingFirstToken] = useState(false);
   const [showFirstTokenHelp, setShowFirstTokenHelp] = useState(false);
+  const [apiAuthEnabled, setApiAuthEnabled] = useState(routerSettings.api_auth_enabled);
+  const [routerApiKey, setRouterApiKey] = useState("");
+  const [loadingRouterApiKey, setLoadingRouterApiKey] = useState(true);
+  const [savingRouterAuth, setSavingRouterAuth] = useState(false);
+  const [resettingRouterApiKey, setResettingRouterApiKey] = useState(false);
+  const [showResetRouterApiKey, setShowResetRouterApiKey] = useState(false);
 
   useEffect(() => {
     setFirstTokenSeconds(String(routerSettings.first_token_timeout_ms / 1000));
     setFirstTokenPolicy(routerSettings.first_token_timeout_policy);
     setFirstTokenMode(routerSettings.first_token_timeout_mode);
+    setApiAuthEnabled(routerSettings.api_auth_enabled);
   }, [routerSettings]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.routerAuthKey()
+      .then(({ api_key }) => {
+        if (!cancelled) setRouterApiKey(api_key);
+      })
+      .catch((error) => {
+        if (!cancelled) setNotice({ type: "error", message: error instanceof Error ? error.message : "网关 API Key 加载失败" });
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingRouterApiKey(false);
+      });
+    return () => { cancelled = true; };
+  }, [setNotice]);
   const active = requests.filter((request) => ACTIVE_REQUEST_STATES.has(request.status));
   const summary = stats.periods?.[summaryRange] ?? stats.summary;
   const measuredTotal = Math.max(0, summary.upstream_requests - (summary.client_disconnected || 0) - (summary.cancelled || 0));
@@ -162,6 +184,49 @@ export function Overview({
     }
   };
 
+  const toggleRouterAuth = async (enabled: boolean) => {
+    setApiAuthEnabled(enabled);
+    setSavingRouterAuth(true);
+    try {
+      const saved = await api.updateRouterSettings({ api_auth_enabled: enabled });
+      setApiAuthEnabled(saved.api_auth_enabled);
+      setNotice({ type: "success", message: saved.api_auth_enabled ? "API Key 认证已开启" : "API Key 认证已关闭" });
+    } catch (error) {
+      setApiAuthEnabled(routerSettings.api_auth_enabled);
+      setNotice({ type: "error", message: error instanceof Error ? error.message : "认证模式保存失败" });
+    } finally {
+      setSavingRouterAuth(false);
+    }
+  };
+
+  const copyRouterApiKey = async () => {
+    if (!routerApiKey) return;
+    try {
+      if (navigator.clipboard?.writeText && window.isSecureContext) {
+        await navigator.clipboard.writeText(routerApiKey);
+      } else {
+        fallbackCopy(routerApiKey);
+      }
+      setNotice({ type: "success", message: "API Key 已复制" });
+    } catch {
+      setNotice({ type: "error", message: "API Key 复制失败" });
+    }
+  };
+
+  const resetRouterApiKey = async () => {
+    setResettingRouterApiKey(true);
+    try {
+      const { api_key } = await api.resetRouterAuthKey();
+      setRouterApiKey(api_key);
+      setShowResetRouterApiKey(false);
+      setNotice({ type: "success", message: "API Key 已重置，请更新所有使用旧 Key 的客户端" });
+    } catch (error) {
+      setNotice({ type: "error", message: error instanceof Error ? error.message : "API Key 重置失败" });
+    } finally {
+      setResettingRouterApiKey(false);
+    }
+  };
+
   return (
     <div className="page overview-page">
       <section className="service-strip">
@@ -192,6 +257,26 @@ export function Overview({
               <Copy size={15} />
             </button>
           </div>
+        </div>
+        <div className="router-auth-control">
+          <span>认证模式</span>
+          <label className="switch" title={apiAuthEnabled ? "关闭 OpenAI API Key 认证" : "开启 OpenAI API Key 认证"}>
+            <input
+              type="checkbox"
+              aria-label="API Key 认证"
+              checked={apiAuthEnabled}
+              disabled={savingRouterAuth}
+              onChange={(event) => void toggleRouterAuth(event.target.checked)}
+            />
+            <span />
+          </label>
+          <code title="API Key 已脱敏显示">{loadingRouterApiKey ? "加载中..." : maskRouterApiKey(routerApiKey)}</code>
+          <button className="icon-button" type="button" title="复制完整 API Key" disabled={!routerApiKey || loadingRouterApiKey} onClick={() => void copyRouterApiKey()}>
+            <Copy size={15} />
+          </button>
+          <button className="icon-button" type="button" title="重置 API Key" disabled={loadingRouterApiKey || resettingRouterApiKey} onClick={() => setShowResetRouterApiKey(true)}>
+            <RotateCcw size={15} />
+          </button>
         </div>
       </section>
 
@@ -505,6 +590,24 @@ export function Overview({
           </div>
         </Modal>
       )}
+      {showResetRouterApiKey && (
+        <Modal
+          title="重置 API Key"
+          description="重置后，使用旧 Key 的客户端将立即无法通过认证。"
+          onClose={() => !resettingRouterApiKey && setShowResetRouterApiKey(false)}
+        >
+          <div className="router-key-reset-confirm">
+            <p>确认生成新的 sk- Key？当前 Key 无法恢复。</p>
+            <div className="form-footer">
+              <span className="form-spacer" />
+              <button className="button button-secondary" type="button" disabled={resettingRouterApiKey} onClick={() => setShowResetRouterApiKey(false)}>取消</button>
+              <button className="button button-danger-ghost" type="button" disabled={resettingRouterApiKey} onClick={() => void resetRouterApiKey()}>
+                <RotateCcw size={15} />{resettingRouterApiKey ? "重置中" : "确认重置"}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -548,6 +651,11 @@ function fallbackCopy(value: string) {
   const copied = document.execCommand("copy");
   input.remove();
   if (!copied) throw new Error("copy failed");
+}
+
+function maskRouterApiKey(value: string) {
+  if (!value) return "未生成";
+  return `${value.slice(0, 3)}${"*".repeat(8)}${value.slice(-6)}`;
 }
 
 function buildDailySeries(daily: Stats["daily"]): Stats["daily"] {
