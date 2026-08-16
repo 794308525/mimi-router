@@ -66,7 +66,7 @@ test("records immediately, fails over, streams unchanged, and captures usage", a
   const pending = fetch(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model: "default", input: "hello", stream: true }),
+    body: JSON.stringify({ model: "default", input: "hello", stream: true, reasoning: { effort: "high" } }),
   });
 
   await new Promise((resolve) => setTimeout(resolve, 70));
@@ -83,6 +83,10 @@ test("records immediately, fails over, streams unchanged, and captures usage", a
 
   const completed = (await get("/api/requests?limit=10"))[0];
   assert.equal(completed.status, "completed");
+  assert.equal(completed.requested_model, "default");
+  assert.equal(completed.upstream_model, "default");
+  assert.equal(completed.actual_upstream_model, "default-actual");
+  assert.equal(completed.reasoning_effort, "high");
   assert.equal(completed.attempt_count, 2);
   assert.equal(completed.is_failover, 1);
   assert.equal(completed.input_tokens, 12);
@@ -95,6 +99,7 @@ test("records immediately, fails over, streams unchanged, and captures usage", a
   assert.equal(detail.attempts.length, 2);
   assert.equal(detail.attempts[0].status, "failed");
   assert.equal(detail.attempts[1].status, "completed");
+  assert.equal(detail.attempts[1].actual_upstream_model, "default-actual");
   assert.ok(Number.isInteger(detail.attempts[1].request_upload_ms));
   assert.ok(Number.isInteger(detail.attempts[1].upstream_wait_ms));
 });
@@ -207,6 +212,7 @@ test("routes compact requests and skips providers that do not support the endpoi
     assert.equal(detail.attempt_count, 2);
     assert.equal(detail.input_tokens, 18);
     assert.equal(detail.output_tokens, 2);
+    assert.equal(detail.actual_upstream_model, "gpt-5.6-sol-actual");
     assert.equal(detail.attempts[0].error_category, "unsupported_endpoint");
     assert.equal(detail.attempts[1].status, "completed");
     const unsupportedAfter = (await get("/api/providers")).find((provider) => provider.id === unsupported.id);

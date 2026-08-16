@@ -248,6 +248,32 @@ export function formatTokens(value: number | null | undefined) {
   return compactNumber(value, 1_000, "K");
 }
 
+export function TokenStack({ input, cached, output }: {
+  input: number | null | undefined;
+  cached: number | null | undefined;
+  output: number | null | undefined;
+}) {
+  return (
+    <span className="token-stack">
+      <span><em>入</em><b>{formatTokens(input)}</b></span>
+      <span><em>缓</em><b>{formatTokens(cached)}</b></span>
+      <span><em>出</em><b>{formatTokens(output)}</b></span>
+    </span>
+  );
+}
+
+export function reasoningEffortLabel(effort: string | null | undefined) {
+  const labels: Record<string, string> = {
+    minimal: "极低",
+    low: "低",
+    medium: "中",
+    high: "高",
+    xhigh: "超高",
+  };
+  const normalized = effort?.trim().toLowerCase();
+  return normalized ? labels[normalized] || effort || "未指定" : "未指定";
+}
+
 function compactNumber(value: number, divisor: number, suffix: string) {
   const scaled = value / divisor;
   const digits = scaled < 10 ? 1 : 0;

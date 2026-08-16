@@ -1,6 +1,22 @@
 {
-  "currentVersion": "0.2.1",
+  "currentVersion": "0.2.2",
   "releases": [
+    {
+      "version": "0.2.2",
+      "date": "2026-08-16",
+      "notes": {
+        "zh-CN": [
+          "请求记录新增推理强度与上游实际返回模型，流式、非流式和竞速请求均会采集。",
+          "首页和请求记录改为纵向展示输入、缓存和输出 Token，并压缩状态与操作列宽。",
+          "缩小首页运行中请求的中断按钮，为模型与链路信息释放更多横向空间。"
+        ],
+        "en": [
+          "Request history now captures reasoning effort and the model actually returned by upstream responses across streaming, non-streaming, and race requests.",
+          "Dashboard and request history now stack input, cached, and output tokens vertically while using narrower status and action columns.",
+          "Reduced the active-request interrupt button size to leave more horizontal space for model and routing details."
+        ]
+      }
+    },
     {
       "version": "0.2.1",
       "date": "2026-08-16",

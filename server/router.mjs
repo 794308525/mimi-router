@@ -136,10 +136,12 @@ export class RouterEngine {
     }
 
     const requestedModel = String(body.model ?? DEFAULT_MODEL);
+    const reasoningEffort = extractReasoningEffort(body);
     const isStream = upstreamEndpoint === "responses" && body.stream === true;
     this.updateRequest(requestId, {
       status: "routing",
       requested_model: requestedModel,
+      reasoning_effort: reasoningEffort,
       is_stream: isStream ? 1 : 0,
     });
     this.emitRequest(requestId, "request.status_changed");
@@ -784,6 +786,7 @@ export class RouterEngine {
         stickyTtlSeconds,
         usage: candidate.usage,
         responseId: candidate.responseId,
+        actualUpstreamModel: candidate.actualUpstreamModel,
       })) return;
       this.releaseProvider(provider.id, probe);
       const terminationReason = clientTerminationReason(clientController);
@@ -826,6 +829,7 @@ export class RouterEngine {
         upstream,
         usage: candidate.usage,
         responseId: candidate.responseId,
+        actualUpstreamModel: candidate.actualUpstreamModel,
         failure: candidate.semanticFailure,
         affectsProviderHealth: true,
       });
@@ -843,6 +847,7 @@ export class RouterEngine {
         upstream,
         usage: candidate.usage,
         responseId: candidate.responseId,
+        actualUpstreamModel: candidate.actualUpstreamModel,
         failure: candidate.incompleteFailure,
         affectsProviderHealth: false,
       });
@@ -860,6 +865,7 @@ export class RouterEngine {
       stickyTtlSeconds,
       usage: candidate.usage,
       responseId: candidate.responseId,
+      actualUpstreamModel: candidate.actualUpstreamModel,
     });
   }
 
@@ -932,6 +938,7 @@ export class RouterEngine {
 
     let usage = {};
     let responseId = "";
+    let actualUpstreamModel = "";
     let firstOutputRecorded = false;
     let semanticFailure = null;
     let incompleteFailure = null;
@@ -959,7 +966,7 @@ export class RouterEngine {
         const parser = createSseInspector((payload) => {
           usage = extractUsage(payload) ?? usage;
           responseId = extractResponseId(payload) || responseId;
-          this.observeAttemptPayload({ requestId, attemptId, upstreamModel, payload });
+          actualUpstreamModel = this.observeAttemptPayload({ requestId, attemptId, upstreamModel, payload }) || actualUpstreamModel;
           semanticFailure ??= semanticFailureFromPayload(payload, upstream.status);
           incompleteFailure ??= incompleteFailureFromPayload(payload);
           if (!semanticFailure && isMeaningfulStreamOutput(payload)) markFirstOutput();
@@ -1002,7 +1009,7 @@ export class RouterEngine {
           incompleteFailure = incompleteFailureFromPayload(payload);
           usage = extractUsage(payload) ?? {};
           responseId = extractResponseId(payload);
-          this.observeAttemptPayload({ requestId, attemptId, upstreamModel, payload });
+          actualUpstreamModel = this.observeAttemptPayload({ requestId, attemptId, upstreamModel, payload }) || actualUpstreamModel;
         } catch {
           // The original upstream payload is still returned unchanged.
         }
@@ -1028,6 +1035,7 @@ export class RouterEngine {
         upstream,
         usage,
         responseId,
+        actualUpstreamModel,
         failure: semanticFailure,
         affectsProviderHealth: true,
       });
@@ -1045,6 +1053,7 @@ export class RouterEngine {
         upstream,
         usage,
         responseId,
+        actualUpstreamModel,
         failure: incompleteFailure,
         affectsProviderHealth: false,
       });
@@ -1062,6 +1071,7 @@ export class RouterEngine {
       stickyTtlSeconds,
       usage,
       responseId,
+      actualUpstreamModel,
     });
   }
 
@@ -1077,6 +1087,7 @@ export class RouterEngine {
     stickyTtlSeconds,
     usage,
     responseId,
+    actualUpstreamModel,
   }) {
     if (usage && (usage.input_tokens != null || usage.output_tokens != null)) {
       this.updateAttempt(attemptId, {
@@ -1084,6 +1095,7 @@ export class RouterEngine {
         stream_phase: "completed",
         last_stream_event: "response.completed",
         upstream_response_id: responseId || undefined,
+        actual_upstream_model: actualUpstreamModel || "",
       });
     }
     this.syncRequestUsage(requestId);
@@ -1094,6 +1106,7 @@ export class RouterEngine {
       stream_phase: "completed",
       last_stream_event: "response.completed",
       upstream_response_id: responseId || undefined,
+      actual_upstream_model: actualUpstreamModel || "",
       cost_status: this.requestCostStatus(requestId),
     });
     this.publishAttempt(requestId, attemptId);
@@ -1103,6 +1116,7 @@ export class RouterEngine {
       http_status: upstream.status,
       final_provider_id: provider.id,
       upstream_model: upstreamModel,
+      actual_upstream_model: actualUpstreamModel || "",
       termination_reason: null,
       stream_phase: "completed",
       last_stream_event: "response.completed",
@@ -1122,6 +1136,7 @@ export class RouterEngine {
     upstream,
     usage,
     responseId,
+    actualUpstreamModel,
     failure,
     affectsProviderHealth,
   }) {
@@ -1133,6 +1148,7 @@ export class RouterEngine {
       stream_phase: failure.streamPhase || "failed",
       last_stream_event: failure.lastStreamEvent || "response.failed",
       upstream_response_id: responseId || undefined,
+      actual_upstream_model: actualUpstreamModel || "",
     });
     this.releaseProvider(provider.id, probe);
     if (affectsProviderHealth) this.recordFailure(provider, failure.category);
@@ -1141,6 +1157,7 @@ export class RouterEngine {
       stream_phase: failure.streamPhase || "failed",
       last_stream_event: failure.lastStreamEvent || "response.failed",
       upstream_response_id: responseId || undefined,
+      actual_upstream_model: actualUpstreamModel || "",
       cost_status: usageFields.cost_status,
     });
     this.publishAttempt(requestId, attemptId);
@@ -1150,6 +1167,7 @@ export class RouterEngine {
       http_status: upstream.status,
       final_provider_id: provider.id,
       upstream_model: upstreamModel,
+      actual_upstream_model: actualUpstreamModel || "",
       error_category: failure.category,
       error_message: failure.message,
       termination_reason: failure.category,
@@ -1168,6 +1186,7 @@ export class RouterEngine {
       ...context,
       usage: context.usage ?? null,
       responseId: context.responseId || attempt.upstream_response_id || "",
+      actualUpstreamModel: context.actualUpstreamModel || attempt.actual_upstream_model || "",
     });
     return true;
   }
@@ -1481,6 +1500,7 @@ export class RouterEngine {
       status: "connecting",
       final_provider_id: provider.id,
       upstream_model: upstreamModel,
+      actual_upstream_model: "",
       attempt_count: sequence,
       is_failover: current?.is_failover || changedProvider ? 1 : 0,
       stream_phase: "connecting",
@@ -1522,7 +1542,7 @@ export class RouterEngine {
     const allowed = [
       "headers_at", "headers_ms", "connection_reused", "network_connect_ms", "request_upload_ms",
       "upstream_wait_ms", "first_byte_at", "ended_at", "duration_ms", "ttft_ms", "status",
-      "requested_model", "upstream_model", "route_rule_id", "route_group_id",
+      "requested_model", "upstream_model", "actual_upstream_model", "reasoning_effort", "route_rule_id", "route_group_id",
       "final_provider_id", "attempt_count", "is_stream", "is_failover",
       "input_tokens", "output_tokens", "cached_tokens", "reasoning_tokens",
       "cache_creation_tokens", "input_cost_usd", "cached_input_cost_usd",
@@ -1544,7 +1564,7 @@ export class RouterEngine {
       "input_tokens", "output_tokens", "cached_tokens", "cache_creation_tokens", "reasoning_tokens",
       "input_cost_usd", "cached_input_cost_usd", "cache_creation_cost_usd", "output_cost_usd", "total_cost_usd",
       "pricing_model", "pricing_source", "termination_reason", "stream_phase", "last_stream_event",
-      "upstream_response_id", "cost_status",
+      "upstream_response_id", "actual_upstream_model", "cost_status",
     ];
     const entries = Object.entries(fields).filter(([key, value]) => allowed.includes(key) && value !== undefined);
     if (entries.length === 0) return;
@@ -1564,18 +1584,27 @@ export class RouterEngine {
     const phase = streamPhaseForPayload(payload);
     const usage = extractUsage(payload);
     const responseId = extractResponseId(payload);
+    const actualUpstreamModel = extractResponseModel(payload);
     const previous = this.attemptObservations.get(attemptId) ?? {};
     const usageChanged = usage && JSON.stringify(usage) !== JSON.stringify(previous.usage);
     const phaseChanged = phase && phase !== previous.phase;
     const responseChanged = responseId && responseId !== previous.responseId;
+    const modelChanged = actualUpstreamModel && actualUpstreamModel !== previous.actualUpstreamModel;
     const importantEvent = eventType === "response.created"
       || eventType === "response.completed"
       || eventType === "response.incomplete"
       || eventType === "response.failed"
       || eventType === "error";
-    if (!usageChanged && !phaseChanged && !responseChanged && !importantEvent) return;
+    if (!usageChanged && !phaseChanged && !responseChanged && !modelChanged && !importantEvent) {
+      return actualUpstreamModel || previous.actualUpstreamModel || "";
+    }
 
-    const observation = { usage: usage ?? previous.usage, phase: phase ?? previous.phase, responseId: responseId || previous.responseId };
+    const observation = {
+      usage: usage ?? previous.usage,
+      phase: phase ?? previous.phase,
+      responseId: responseId || previous.responseId,
+      actualUpstreamModel: actualUpstreamModel || previous.actualUpstreamModel,
+    };
     this.attemptObservations.set(attemptId, observation);
     const usageFields = usage ? usageFieldsForModel(this.db, upstreamModel, usage, phase === "completed") : {};
     this.updateAttempt(attemptId, {
@@ -1583,9 +1612,12 @@ export class RouterEngine {
       stream_phase: phase || undefined,
       last_stream_event: eventType || undefined,
       upstream_response_id: responseId || undefined,
+      actual_upstream_model: actualUpstreamModel || undefined,
       cost_status: usageFields.cost_status,
     });
+    if (actualUpstreamModel) this.updateRequest(requestId, { actual_upstream_model: actualUpstreamModel });
     this.syncRequestUsage(requestId);
+    return observation.actualUpstreamModel || "";
   }
 
   syncRequestUsage(requestId) {
@@ -1918,6 +1950,16 @@ function extractUsage(payload) {
   return payload?.response?.usage ?? payload?.usage ?? null;
 }
 
+function extractResponseModel(payload) {
+  const model = payload?.response?.model ?? payload?.model;
+  return typeof model === "string" ? model.trim() : "";
+}
+
+function extractReasoningEffort(body) {
+  const effort = body?.reasoning?.effort ?? body?.reasoning_effort ?? body?.model_reasoning_effort;
+  return typeof effort === "string" ? effort.trim() : "";
+}
+
 function usageFieldsForModel(db, model, usage, complete = false) {
   const cacheCreationTokens = usage?.input_tokens_details?.cache_creation_tokens
     ?? usage?.input_tokens_details?.cache_write_tokens
@@ -2041,6 +2083,7 @@ function createRaceCandidate({
     parser: null,
     usage: {},
     responseId: "",
+    actualUpstreamModel: "",
     lastStreamEvent: "",
     streamPhase: "connecting",
     semanticFailure: null,
@@ -2053,6 +2096,7 @@ function createRaceCandidate({
   candidate.parser = createSseInspector((payload) => {
     candidate.usage = extractUsage(payload) ?? candidate.usage;
     candidate.responseId = extractResponseId(payload) || candidate.responseId;
+    candidate.actualUpstreamModel = extractResponseModel(payload) || candidate.actualUpstreamModel;
     candidate.lastStreamEvent = String(payload?.type || candidate.lastStreamEvent || "");
     candidate.streamPhase = streamPhaseForPayload(payload) || candidate.streamPhase;
     onPayload?.(payload);

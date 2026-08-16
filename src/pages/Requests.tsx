@@ -11,11 +11,13 @@ import {
   PageHeader,
   RequestFailureReason,
   RequestStatus,
+  TokenStack,
   failureReasonLabel,
   formatDuration,
   formatRequestCost,
   formatTime,
   formatTokens,
+  reasoningEffortLabel,
 } from "../components/Common";
 
 export function RequestsPage({
@@ -53,7 +55,7 @@ export function RequestsPage({
     if (status === "running" && !ACTIVE_REQUEST_STATES.has(request.status)) return false;
     if (status !== "all" && status !== "running" && request.status !== status) return false;
     if (providerId !== "all" && request.final_provider_id !== providerId) return false;
-    if (query && !`${request.id} ${request.requested_model} ${request.provider_name || ""}`.toLowerCase().includes(query.toLowerCase())) return false;
+    if (query && !`${request.id} ${request.requested_model} ${request.actual_upstream_model} ${request.reasoning_effort} ${request.provider_name || ""}`.toLowerCase().includes(query.toLowerCase())) return false;
     return true;
   }), [requests, status, providerId, query]);
   const ttftBaselines = useMemo(() => buildTtftBaselines(requests), [requests]);
@@ -127,6 +129,18 @@ export function RequestsPage({
       ) : (
         <section className="table-shell request-table-shell">
           <table>
+            <colgroup>
+              <col className="request-col-status" />
+              <col className="request-col-time" />
+              <col className="request-col-model" />
+              <col className="request-col-provider" />
+              <col className="request-col-duration" />
+              <col className="request-col-first-token" />
+              <col className="request-col-token" />
+              <col className="request-col-cost" />
+              <col className="request-col-attempt" />
+              <col className="request-col-action" />
+            </colgroup>
             <thead><tr><th>状态</th><th>开始时间</th><th>模型</th><th>中转</th><th>耗时</th><th>首字</th><th>Token</th><th>消耗金额</th><th>尝试</th><th /></tr></thead>
             <tbody>
               {filtered.map((request) => {
@@ -136,11 +150,11 @@ export function RequestsPage({
                   <tr key={request.id} className={running ? "running-row" : ""} onClick={() => openDetail(request)}>
                     <td><div className="request-status-cell"><RequestStatus status={request.status} /><RequestFailureReason request={request} /></div></td>
                     <td><span className="tabular">{formatTime(request.started_at)}</span></td>
-                    <td><div className="model-cell"><strong>{request.requested_model || "识别中"}</strong>{request.upstream_model && request.upstream_model !== request.requested_model && <small>→ {request.upstream_model}</small>}</div></td>
+                    <td><div className="model-cell"><strong>{request.requested_model || "识别中"}</strong><small title={request.actual_upstream_model || undefined}>实际 {request.actual_upstream_model || "未返回"} · 强度 {reasoningEffortLabel(request.reasoning_effort)}</small></div></td>
                     <td>{request.provider_name || <span className="text-muted">等待路由</span>}</td>
                     <td><ElapsedTime startedAt={request.started_at} durationMs={request.duration_ms} running={running} /></td>
                     <td><strong className={`first-token-value ${firstToken.tone}`} title={firstToken.title}>{formatDuration(request.ttft_ms)}</strong></td>
-                    <td>{formatTokens((request.input_tokens ?? 0) + (request.output_tokens ?? 0))}</td>
+                    <td><TokenStack input={request.input_tokens} cached={request.cached_tokens} output={request.output_tokens} /></td>
                     <td title={request.cost_status === "partial" ? "异常结束前收到的部分用量" : request.cost_status === "unknown" ? "上游未返回足够用量" : undefined}>{formatRequestCost(request.total_cost_usd, request.cost_status)}</td>
                     <td>{request.attempt_count}{request.is_failover ? <span className="failover-mark">切换</span> : null}</td>
                     <td><ChevronRight size={16} /></td>
@@ -184,7 +198,9 @@ function RequestDetail({
       </div>
       <div className="detail-grid">
         <div><span>请求模型</span><strong>{request.requested_model || "识别中"}</strong></div>
-        <div><span>上游模型</span><strong>{request.upstream_model || "-"}</strong></div>
+        <div><span>发送模型</span><strong>{request.upstream_model || "-"}</strong></div>
+        <div><span>实际模型</span><strong>{request.actual_upstream_model || "-"}</strong></div>
+        <div><span>推理强度</span><strong>{reasoningEffortLabel(request.reasoning_effort)}</strong></div>
         <div><span>路由规则</span><strong>{request.route_rule_name || "-"}</strong></div>
         <div><span>路由组</span><strong>{request.route_group_name || "-"}</strong></div>
         <div><span>最终中转</span><strong>{request.provider_name || "-"}</strong></div>

@@ -135,11 +135,13 @@ const server = createServer((req, res) => {
     }
     if (req.url?.includes("/hang/")) return;
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    const actualModel = `${body.model || "mock-model"}-actual`;
     if (compact) {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({
         id: "resp_compact_mock",
         object: "response.compaction",
+        model: actualModel,
         output: [{ type: "compaction", id: "cmp_mock", encrypted_content: "mock" }],
         usage: { input_tokens: 18, output_tokens: 2, input_tokens_details: { cached_tokens: 3 } },
       }));
@@ -147,12 +149,13 @@ const server = createServer((req, res) => {
     }
     if (req.url?.includes("/partial/") && body.stream) {
       res.writeHead(200, { "content-type": "text/event-stream" });
-      res.write(`event: response.created\ndata: ${JSON.stringify({ type: "response.created", response: { id: "resp_partial" } })}\n\n`);
+      res.write(`event: response.created\ndata: ${JSON.stringify({ type: "response.created", response: { id: "resp_partial", model: actualModel } })}\n\n`);
       res.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "PARTIAL" })}\n\n`);
       res.write(`event: response.incomplete\ndata: ${JSON.stringify({
         type: "response.incomplete",
         response: {
           id: "resp_partial",
+          model: actualModel,
           usage: { input_tokens: 20, output_tokens: 3, input_tokens_details: { cached_tokens: 4 } },
         },
       })}\n\n`);
@@ -161,12 +164,13 @@ const server = createServer((req, res) => {
     }
     if (req.url?.includes("/terminal-open/") && body.stream) {
       res.writeHead(200, { "content-type": "text/event-stream" });
-      res.write(`event: response.created\ndata: ${JSON.stringify({ type: "response.created", response: { id: "resp_terminal_open" } })}\n\n`);
+      res.write(`event: response.created\ndata: ${JSON.stringify({ type: "response.created", response: { id: "resp_terminal_open", model: actualModel } })}\n\n`);
       res.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "OK" })}\n\n`);
       res.write(`event: response.completed\ndata: ${JSON.stringify({
         type: "response.completed",
         response: {
           id: "resp_terminal_open",
+          model: actualModel,
           usage: {
             input_tokens: 24,
             output_tokens: 2,
@@ -185,7 +189,7 @@ const server = createServer((req, res) => {
     setTimeout(() => {
       if (body.stream) {
         res.writeHead(200, { "content-type": "text/event-stream" });
-        res.write(`event: response.created\ndata: ${JSON.stringify({ type: "response.created", response: { id: "resp_mock" } })}\n\n`);
+        res.write(`event: response.created\ndata: ${JSON.stringify({ type: "response.created", response: { id: "resp_mock", model: actualModel } })}\n\n`);
         setTimeout(() => {
           res.write(`event: response.output_text.delta\ndata: ${JSON.stringify({
             type: "response.output_text.delta",
@@ -195,6 +199,7 @@ const server = createServer((req, res) => {
             type: "response.completed",
             response: {
               id: "resp_mock",
+              model: actualModel,
               usage: {
                 input_tokens: 12,
                 output_tokens: 5,
@@ -206,7 +211,7 @@ const server = createServer((req, res) => {
         }, firstOutputDelay);
       } else {
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ id: "resp_mock", output: [], usage: { input_tokens: 12, output_tokens: 5 } }));
+        res.end(JSON.stringify({ id: "resp_mock", model: actualModel, output: [], usage: { input_tokens: 12, output_tokens: 5 } }));
       }
     }, headerDelay);
   });

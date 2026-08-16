@@ -2,6 +2,12 @@
 
 This project follows semantic versioning. Every feature update must keep the application version and both language variants of the release notes in sync.
 
+## 0.2.2 - 2026-08-16
+
+- Request history now captures reasoning effort and the model actually returned by upstream responses across streaming, non-streaming, and race requests.
+- Dashboard and request history now stack input, cached, and output tokens vertically while using narrower status and action columns.
+- Reduced the active-request interrupt button size to leave more horizontal space for model and routing details.
+
 ## 0.2.1 - 2026-08-16
 
 - Codex takeover now distinguishes new, standard, custom-provider, and already-managed configurations and offers the appropriate action for each state.

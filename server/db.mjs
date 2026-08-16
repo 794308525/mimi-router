@@ -95,6 +95,8 @@ export function createDatabase(dataDir) {
       status TEXT NOT NULL,
       requested_model TEXT NOT NULL DEFAULT '',
       upstream_model TEXT NOT NULL DEFAULT '',
+      actual_upstream_model TEXT NOT NULL DEFAULT '',
+      reasoning_effort TEXT NOT NULL DEFAULT '',
       route_rule_id TEXT,
       route_group_id TEXT,
       final_provider_id TEXT,
@@ -128,6 +130,7 @@ export function createDatabase(dataDir) {
       request_id TEXT NOT NULL,
       sequence INTEGER NOT NULL,
       provider_id TEXT NOT NULL,
+      actual_upstream_model TEXT NOT NULL DEFAULT '',
       started_at TEXT NOT NULL,
       headers_at TEXT,
       headers_ms INTEGER,
@@ -218,12 +221,15 @@ export function createDatabase(dataDir) {
   ensureColumn(db, "requests", "network_connect_ms", "INTEGER");
   ensureColumn(db, "requests", "request_upload_ms", "INTEGER");
   ensureColumn(db, "requests", "upstream_wait_ms", "INTEGER");
+  ensureColumn(db, "requests", "actual_upstream_model", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, "requests", "reasoning_effort", "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "request_attempts", "headers_at", "TEXT");
   ensureColumn(db, "request_attempts", "headers_ms", "INTEGER");
   ensureColumn(db, "request_attempts", "connection_reused", "INTEGER");
   ensureColumn(db, "request_attempts", "network_connect_ms", "INTEGER");
   ensureColumn(db, "request_attempts", "request_upload_ms", "INTEGER");
   ensureColumn(db, "request_attempts", "upstream_wait_ms", "INTEGER");
+  ensureColumn(db, "request_attempts", "actual_upstream_model", "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "requests", "cache_creation_tokens", "INTEGER");
   ensureColumn(db, "requests", "input_cost_usd", "REAL");
   ensureColumn(db, "requests", "cached_input_cost_usd", "REAL");

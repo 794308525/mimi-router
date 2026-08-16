@@ -128,6 +128,7 @@ export type RequestAttempt = {
   sequence: number;
   provider_id: string;
   provider_name: string;
+  actual_upstream_model: string;
   started_at: string;
   headers_at: string | null;
   headers_ms: number | null;
@@ -177,6 +178,8 @@ export type RequestRecord = {
   status: "received" | "routing" | "connecting" | "streaming" | "completed" | "failed" | "cancelled" | "client_disconnected" | "interrupted";
   requested_model: string;
   upstream_model: string;
+  actual_upstream_model: string;
+  reasoning_effort: string;
   route_rule_id: string | null;
   route_group_id: string | null;
   final_provider_id: string | null;

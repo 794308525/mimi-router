@@ -11,11 +11,13 @@ import {
   ProviderStatus,
   RequestFailureReason,
   RequestStatus,
+  TokenStack,
   formatDuration,
   formatRequestCost,
   formatTime,
   formatTokens,
   formatUsd,
+  reasoningEffortLabel,
 } from "../components/Common";
 
 const PROVIDER_NAMES_VISIBLE_KEY = "mimi-router.provider-names-visible";
@@ -531,7 +533,7 @@ export function Overview({
               <col className="records-col-cost" />
               <col className="records-col-action" />
             </colgroup>
-            <thead><tr><th>状态</th><th>时间</th><th>模型 / 中转</th><th>Token（入 / 缓 / 出）</th><th>响应头</th><th>首字</th><th>生成</th><th>总耗时</th><th>消耗金额</th><th>操作</th></tr></thead>
+            <thead><tr><th>状态</th><th>时间</th><th>模型 / 中转</th><th>Token</th><th>响应头</th><th>首字</th><th>生成</th><th>总耗时</th><th>消耗金额</th><th>操作</th></tr></thead>
             <tbody>{recentUsage.map((request) => {
               const running = ACTIVE_REQUEST_STATES.has(request.status);
               const generationDuration = request.duration_ms != null && request.ttft_ms != null
@@ -547,17 +549,18 @@ export function Overview({
                   <td><span className="tabular">{formatTime(request.started_at)}</span></td>
                   <td>
                     <button className="usage-record-link" type="button" onClick={() => onOpenRequest(request)}>
-                      <strong>{request.upstream_model || request.requested_model || "正在识别模型"}</strong>
-                      <small>{displayProviderName(request.provider_name, providerNamesVisible, providerAliases)}</small>
+                      <strong>{request.requested_model || "正在识别模型"}</strong>
+                      <small className="model-runtime-meta" title={request.actual_upstream_model || undefined}>实际 {request.actual_upstream_model || "未返回"} · 强度 {reasoningEffortLabel(request.reasoning_effort)}</small>
+                      <small className="model-provider-name">{displayProviderName(request.provider_name, providerNamesVisible, providerAliases)}</small>
                     </button>
                   </td>
-                  <td><span className="token-triplet"><strong>{formatTokens(request.input_tokens)}</strong><i>/</i><strong>{formatTokens(request.cached_tokens)}</strong><i>/</i><strong>{formatTokens(request.output_tokens)}</strong></span></td>
+                  <td><TokenStack input={request.input_tokens} cached={request.cached_tokens} output={request.output_tokens} /></td>
                   <td title={networkTimingTitle(request)}>{formatDuration(request.headers_ms)}</td>
                   <td><span className={`timing-cell first-token-value ${firstToken.tone}`} title={firstToken.title}><strong>{formatDuration(request.ttft_ms)}</strong><small>头后 {formatDuration(firstTokenWait)}</small></span></td>
                   <td>{formatDuration(generationDuration)}</td>
                   <td><ElapsedTime startedAt={request.started_at} durationMs={request.duration_ms} running={running} /></td>
                   <td><strong title={request.cost_status === "partial" ? "异常结束前收到的部分用量" : request.cost_status === "unknown" ? "上游未返回足够用量" : undefined}>{formatRequestCost(request.total_cost_usd, request.cost_status)}</strong></td>
-                  <td>{running ? <button className="button button-danger-ghost button-small" type="button" disabled={cancellingId === request.id} onClick={() => void cancelRequest(request)}><Ban size={13} />{cancellingId === request.id ? "中断中" : "中断"}</button> : <span className="text-muted">-</span>}</td>
+                  <td>{running ? <button className="button button-danger-ghost button-compact" type="button" disabled={cancellingId === request.id} onClick={() => void cancelRequest(request)}><Ban size={11} />{cancellingId === request.id ? "中断中" : "中断"}</button> : <span className="text-muted">-</span>}</td>
                 </tr>
               );
             })}</tbody>
