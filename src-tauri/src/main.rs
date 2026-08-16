@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use std::{
     fs::{self, OpenOptions},
     io::{self, Read, Write},
@@ -107,7 +109,8 @@ fn start_gateway(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     let output_log = log.try_clone()?;
     let error_log = log.try_clone()?;
 
-    let child = match Command::new(&node_path)
+    let mut command = Command::new(&node_path);
+    command
         .arg("--no-warnings")
         .arg("server/index.mjs")
         .current_dir(&resource_dir)
@@ -116,9 +119,11 @@ fn start_gateway(app: &App) -> Result<(), Box<dyn std::error::Error>> {
         .env("CODEX_ROUTER_PORT", "18080")
         .stdin(Stdio::null())
         .stdout(Stdio::from(output_log))
-        .stderr(Stdio::from(error_log))
-        .spawn()
-    {
+        .stderr(Stdio::from(error_log));
+    #[cfg(target_os = "windows")]
+    command.creation_flags(0x08000000);
+
+    let child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
             writeln!(log, "[desktop] 本地网关进程创建失败: {error}")?;
