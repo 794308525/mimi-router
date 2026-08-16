@@ -312,13 +312,22 @@ export type PricingCatalog = {
   changed?: number;
 };
 
+export type CodexConfigKind = "new" | "standard" | "custom" | "managed";
+export type CodexApplyMode = "initialize" | "preserve";
+
 export type CodexStatus = {
   path: string;
   exists: boolean;
   connected: boolean;
   expected: string;
   snippet: string;
+  config_kind: CodexConfigKind;
+  active_provider: string | null;
+  preserve_available: boolean;
+  recommended_mode: CodexApplyMode;
+  api_auth_enabled: boolean;
   backup?: string | null;
+  applied_mode?: CodexApplyMode;
 };
 
 export type StorageUsage = {

@@ -115,7 +115,7 @@ async function handleApi(req, res, url) {
       requests: listRequests(db, 100),
       stats: getStats(db, 7),
       pricing: getPricingCatalog(db),
-      codex: codexStatus(port),
+      codex: codexStatus(port, { apiAuthEnabled: routerAuthEnabled, apiKey: routerApiKey }),
       router_settings: getRouterSettings(db),
     });
   }
@@ -309,10 +309,18 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/codex") {
-    return json(res, 200, codexStatus(port));
+    return json(res, 200, codexStatus(port, {
+      apiAuthEnabled: routerAuthEnabled,
+      apiKey: routerApiKey,
+    }));
   }
   if (req.method === "POST" && url.pathname === "/api/codex/apply") {
-    return json(res, 200, applyCodexConfig(port));
+    const input = await bodyJson(req);
+    return json(res, 200, applyCodexConfig(port, {
+      mode: input.mode,
+      apiAuthEnabled: routerAuthEnabled,
+      apiKey: routerApiKey,
+    }));
   }
 
   return json(res, 404, { error: "API not found" });

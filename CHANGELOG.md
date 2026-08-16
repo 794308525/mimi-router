@@ -2,6 +2,12 @@
 
 This project follows semantic versioning. Every feature update must keep the application version and both language variants of the release notes in sync.
 
+## 0.2.1 - 2026-08-16
+
+- Codex takeover now distinguishes new, standard, custom-provider, and already-managed configurations and offers the appropriate action for each state.
+- Existing custom providers are preserved by default: only the API URL and, when enabled, the local authentication key are updated while the provider ID, model, and other settings remain unchanged.
+- An optional independent-provider flow remains available with a clear warning about possible session recognition impact.
+
 ## 0.2.0 - 2026-08-16
 
 - Added OpenAI-compatible API key authentication with copy, reset, and persistent local gateway credentials.

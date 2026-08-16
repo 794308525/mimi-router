@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { CheckCircle2, Database, DollarSign, ExternalLink as ExternalLinkIcon, Github, HardDrive, Network, RefreshCcw, ShieldCheck, Trash2 } from "lucide-react";
 import { api } from "../api";
-import type { CodexStatus, Notice, PricingCatalog, StorageUsage } from "../types";
+import type { CodexApplyMode, CodexStatus, Notice, PricingCatalog, StorageUsage } from "../types";
 import { ExternalLink, PageHeader, PROJECT_HOMEPAGE } from "../components/Common";
 
 export function SettingsPage({
@@ -15,7 +15,7 @@ export function SettingsPage({
 }) {
   const [codex, setCodex] = useState(initialCodex);
   const [catalog, setCatalog] = useState(pricing);
-  const [applying, setApplying] = useState(false);
+  const [applyingMode, setApplyingMode] = useState<CodexApplyMode | null>(null);
   const [syncingPricing, setSyncingPricing] = useState(false);
   const [storage, setStorage] = useState<StorageUsage | null>(null);
   const [clearingCache, setClearingCache] = useState(false);
@@ -25,17 +25,27 @@ export function SettingsPage({
     void api.storage().then(setStorage).catch(() => setStorage(null));
   }, []);
 
-  const apply = async () => {
-    if (!window.confirm(`程序将备份并更新 ${codex.path}，让 Codex 指向 ${codex.expected}。继续吗？`)) return;
-    setApplying(true);
+  const codexActions = getCodexActions(codex);
+
+  const apply = async (mode: CodexApplyMode) => {
+    const action = codexActions.find((item) => item.mode === mode);
+    if (!action) return;
+    const confirmation = `${action.title}\n\n${action.description}\n\n程序会先备份 ${codex.path}，然后写入配置。继续吗？`;
+    if (!window.confirm(confirmation)) return;
+    setApplyingMode(mode);
     try {
-      const result = await api.applyCodex();
+      const result = await api.applyCodex(mode);
       setCodex(result);
-      setNotice({ type: "success", message: result.backup ? `Codex 配置已接管，备份：${result.backup}` : "Codex 配置已创建" });
+      const message = mode === "preserve"
+        ? `已保留 ${codex.active_provider} 并更新本地网关连接`
+        : codex.exists
+          ? "已新增 local_router 并切换到本地网关"
+          : "Codex 配置已初始化";
+      setNotice({ type: "success", message: result.backup ? `${message}，备份：${result.backup}` : message });
     } catch (error) {
       setNotice({ type: "error", message: error instanceof Error ? error.message : "配置接管失败" });
     } finally {
-      setApplying(false);
+      setApplyingMode(null);
     }
   };
 
@@ -79,10 +89,28 @@ export function SettingsPage({
         <div className="codex-connect-row">
           <div className={codex.connected ? "connect-status connected" : "connect-status"}>
             {codex.connected ? <CheckCircle2 size={18} /> : <Network size={18} />}
-            <span><strong>{codex.connected ? "Codex 已连接本地网关" : "Codex 尚未接管"}</strong><small>{codex.path}</small></span>
+            <span><strong>{codexStatusTitle(codex)}</strong><small>{codexStatusDetail(codex)}</small></span>
           </div>
-          <button className="button button-primary" type="button" onClick={apply} disabled={applying}>{applying ? "写入中..." : codex.connected ? "重新检查并写入" : "接管 Codex 配置"}</button>
         </div>
+        <div className="codex-action-list">
+          {codexActions.map((action) => (
+            <div className="codex-action-row" key={action.mode}>
+              <div>
+                <strong>{action.title}{action.recommended && <em>推荐</em>}</strong>
+                <p>{action.description}</p>
+              </div>
+              <button
+                className={`button ${action.primary ? "button-primary" : "button-secondary"}`}
+                type="button"
+                onClick={() => apply(action.mode)}
+                disabled={applyingMode !== null}
+              >
+                {applyingMode === action.mode ? "写入中..." : action.button}
+              </button>
+            </div>
+          ))}
+        </div>
+        <div className="config-preview-heading"><span>推荐方式写入预览</span><small>API Key 仅显示占位符</small></div>
         <pre className="config-preview"><code>{codex.snippet}</code></pre>
         <div className="storage-overview">
           <div><Database size={18} /><span><small>数据占用</small><strong>{formatBytes(storage?.data_bytes)}</strong></span></div>
@@ -132,6 +160,78 @@ export function SettingsPage({
       </section>
     </div>
   );
+}
+
+type CodexAction = {
+  mode: CodexApplyMode;
+  title: string;
+  description: string;
+  button: string;
+  primary: boolean;
+  recommended?: boolean;
+};
+
+function getCodexActions(codex: CodexStatus): CodexAction[] {
+  const authChange = codex.api_auth_enabled ? "，并同步本地 API Key" : "";
+  if (codex.config_kind === "custom") {
+    return [
+      {
+        mode: "preserve",
+        title: `保留 ${codex.active_provider || "当前 Provider"}`,
+        description: `只修改当前 Provider 的 API 地址${authChange}；保留 Provider ID、模型和其他设置，不影响旧会话识别。`,
+        button: codex.connected ? "刷新原位接管" : "原位接管",
+        primary: true,
+        recommended: true,
+      },
+      {
+        mode: "initialize",
+        title: "新增独立 Provider",
+        description: "保留原 Provider 配置，新增 local_router 并切换使用。Provider ID 会变化，旧会话可能无法按原配置识别。",
+        button: "新增并切换",
+        primary: false,
+      },
+    ];
+  }
+  if (codex.config_kind === "managed") {
+    return [{
+      mode: "preserve",
+      title: "刷新当前接管",
+      description: `只更新 local_router 的 API 地址${authChange}；不会修改当前模型和其他 Codex 设置。`,
+      button: "刷新配置",
+      primary: true,
+      recommended: true,
+    }];
+  }
+  if (codex.config_kind === "standard") {
+    return [{
+      mode: "initialize",
+      title: "新增本地 Provider",
+      description: "保留现有 Codex 设置，新增 local_router 并切换使用；仅在原配置没有模型时补充默认模型。",
+      button: "新增并接管",
+      primary: true,
+      recommended: true,
+    }];
+  }
+  return [{
+    mode: "initialize",
+    title: "初始化接管",
+    description: "创建 Codex 配置和 local_router Provider，并写入默认模型与本地网关地址。",
+    button: "初始化配置",
+    primary: true,
+    recommended: true,
+  }];
+}
+
+function codexStatusTitle(codex: CodexStatus) {
+  if (codex.connected) return "Codex 已连接本地网关";
+  if (codex.config_kind === "custom") return "检测到已有自定义 Provider";
+  if (codex.config_kind === "standard") return "检测到现有 Codex 配置";
+  return "尚未发现 Codex 配置";
+}
+
+function codexStatusDetail(codex: CodexStatus) {
+  if (codex.active_provider) return `${codex.path} · 当前 Provider：${codex.active_provider}`;
+  return codex.path;
 }
 
 function formatPrice(value: number | null) {

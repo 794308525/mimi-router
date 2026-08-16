@@ -1,6 +1,22 @@
 {
-  "currentVersion": "0.2.0",
+  "currentVersion": "0.2.1",
   "releases": [
+    {
+      "version": "0.2.1",
+      "date": "2026-08-16",
+      "notes": {
+        "zh-CN": [
+          "Codex 接管会识别新配置、普通配置、自定义 Provider 和已接管配置，并提供对应操作方式。",
+          "已有自定义 Provider 默认采用原位接管，只更新 API 地址和启用认证时的本地 Key，保留 Provider ID、模型与其他设置。",
+          "保留新增独立 Provider 的可选方式，并明确提示旧会话识别风险。"
+        ],
+        "en": [
+          "Codex takeover now distinguishes new, standard, custom-provider, and already-managed configurations and offers the appropriate action for each state.",
+          "Existing custom providers are preserved by default: only the API URL and, when enabled, the local authentication key are updated while the provider ID, model, and other settings remain unchanged.",
+          "An optional independent-provider flow remains available with a clear warning about possible session recognition impact."
+        ]
+      }
+    },
     {
       "version": "0.2.0",
       "date": "2026-08-16",

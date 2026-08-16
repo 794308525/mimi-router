@@ -1,6 +1,7 @@
 import type {
   Bootstrap,
   BenchmarkRun,
+  CodexApplyMode,
   CodexStatus,
   PricingCatalog,
   Provider,
@@ -74,7 +75,10 @@ export const api = {
   clearRequests: () => request<{ deleted: number }>("/api/requests", { method: "DELETE" }),
   stats: (days: number) => request<Stats>(`/api/stats?days=${days}`),
   syncPricing: () => request<PricingCatalog>("/api/pricing/sync", { method: "POST" }),
-  applyCodex: () => request<CodexStatus>("/api/codex/apply", { method: "POST" }),
+  applyCodex: (mode: CodexApplyMode) => request<CodexStatus>("/api/codex/apply", {
+    method: "POST",
+    body: JSON.stringify({ mode }),
+  }),
   storage: () => request<StorageUsage>("/api/storage"),
   clearStorageCache: () => request<StorageUsage>("/api/storage/cache", { method: "POST" }),
 };
