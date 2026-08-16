@@ -1,6 +1,6 @@
 {
   "name": "codex-relay-router",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "本地优先的 Responses API 智能路由网关与桌面管理工具",
   "private": true,
   "type": "module",
@@ -11,7 +11,8 @@
     "desktop:prepare": "node scripts/prepare-desktop-runtime.mjs",
     "dev:server": "node --no-warnings server/index.mjs",
     "dev:ui": "vite --host 0.0.0.0 --port 5176 --strictPort",
-    "build": "tsc --noEmit && vite build",
+    "build": "npm run check:version && tsc --noEmit && vite build",
+    "check:version": "node scripts/check-version.mjs",
     "test": "node --test tests/*.test.mjs"
   },
   "dependencies": {

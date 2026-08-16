@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   Activity,
   Cable,
+  Info,
   LayoutDashboard,
   Menu,
   RefreshCcw,
@@ -17,14 +18,16 @@ import { Overview } from "./pages/Overview";
 import { ProvidersPage } from "./pages/Providers";
 import { RequestsPage } from "./pages/Requests";
 import { SettingsPage } from "./pages/Settings";
+import { AboutPage } from "./pages/About";
 
-type PageId = "overview" | "providers" | "requests" | "settings";
+type PageId = "overview" | "providers" | "requests" | "settings" | "about";
 
 const navigation = [
   { id: "overview" as const, label: "总览", icon: LayoutDashboard },
   { id: "providers" as const, label: "中转管理", icon: Server },
   { id: "requests" as const, label: "请求记录", icon: Activity },
   { id: "settings" as const, label: "设置", icon: Settings },
+  { id: "about" as const, label: "关于", icon: Info },
 ];
 
 export default function App() {
@@ -168,6 +171,7 @@ export default function App() {
         {page === "providers" && <ProvidersPage providers={data.providers} groups={data.routes.groups} onRefresh={load} setNotice={setNotice} />}
         {page === "requests" && <RequestsPage requests={data.requests} providers={data.providers} onRefresh={load} setNotice={setNotice} initialDetail={selectedRequest} onDetailClosed={() => setSelectedRequest(null)} />}
         {page === "settings" && <SettingsPage codex={data.codex} pricing={data.pricing} setNotice={setNotice} />}
+        {page === "about" && <AboutPage />}
       </main>
     </div>
   );

@@ -676,6 +676,40 @@ input:disabled, select:disabled { background: #edf0f1; }
 .page:not(.overview-page) .security-grid > div { min-height: 72px; border: 0; background: #f7f9f8; }
 .page:not(.overview-page) .security-grid small, .page:not(.overview-page) .connect-status small { font-size: 10px; }
 .page:not(.overview-page) .pricing-table { border-radius: 8px; background: #f7f9f8; }
+
+.about-language-tabs { height: 34px; padding: 3px; display: inline-flex; align-items: center; gap: 2px; border: 1px solid var(--line); border-radius: 8px; background: #f3f5f6; }
+.about-language-tabs button { height: 26px; padding: 0 11px; border: 0; border-radius: 6px; color: var(--muted); background: transparent; cursor: pointer; font-size: 11px; font-weight: 600; }
+.about-language-tabs button:hover { color: var(--accent-dark); }
+.about-language-tabs button.active { color: #fff; background: var(--accent); box-shadow: 0 2px 6px rgba(32, 166, 106, .22); }
+.about-product { min-height: 112px; margin-bottom: 16px; padding: 22px 24px; display: flex; align-items: center; gap: 16px; border-radius: 10px; background: #fff; box-shadow: var(--card-shadow); }
+.about-app-icon { width: 62px; height: 62px; flex: none; overflow: hidden; border-radius: 14px; background: #dff4fc; box-shadow: 0 7px 18px rgba(62, 145, 190, .18); }
+.about-app-icon img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.about-product-copy { min-width: 0; }
+.about-product-copy h2 { margin: 0 0 6px; font-size: 21px; font-weight: 680; }
+.about-product-copy p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.about-version { margin-left: auto; padding-left: 24px; display: flex; align-items: flex-end; flex-direction: column; gap: 5px; }
+.about-version small { color: var(--faint); font-size: 10px; }
+.about-version strong { color: var(--tech-dark); font-size: 24px; font-variant-numeric: tabular-nums; }
+.about-content-grid { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 16px; align-items: start; }
+.about-releases, .about-source { border-radius: 10px; background: #fff; box-shadow: var(--card-shadow); }
+.about-releases > header { min-height: 70px; padding: 17px 20px; display: flex; align-items: center; }
+.about-releases h2, .about-source h2 { margin: 0 0 5px; font-size: 16px; font-weight: 650; }
+.about-releases header p, .about-source p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.about-release-list { border-top: 1px solid var(--line); }
+.about-release { padding: 20px; display: grid; grid-template-columns: 145px minmax(0, 1fr); gap: 20px; border-bottom: 1px solid var(--line); }
+.about-release:last-child { border-bottom: 0; }
+.about-release-meta { display: flex; align-items: flex-start; flex-direction: column; gap: 8px; }
+.about-release-meta strong { font-size: 15px; font-variant-numeric: tabular-nums; }
+.about-release-meta > span { padding: 3px 7px; border-radius: 999px; color: var(--accent-dark); background: var(--accent-soft); font-size: 10px; font-weight: 650; }
+.about-release-meta time { display: inline-flex; align-items: center; gap: 5px; color: var(--faint); font-size: 10px; font-variant-numeric: tabular-nums; }
+.about-release ul { margin: 0; padding-left: 18px; color: #4d5b68; font-size: 12px; line-height: 1.75; }
+.about-release li + li { margin-top: 5px; }
+.about-release li::marker { color: var(--accent); }
+.about-source { position: sticky; top: 80px; padding: 21px; }
+.about-source > svg { margin-bottom: 14px; color: var(--tech); }
+.about-source p { margin-bottom: 18px; }
+.about-github-link { width: 100%; text-decoration: none; }
+
 .overview-primary-grid > .panel,
 .overview-trend-panel,
 .overview-page .providers-panel,
@@ -793,6 +827,14 @@ input:disabled, select:disabled { background: #edf0f1; }
   .storage-overview > button { grid-column: 1 / -1; justify-self: end; }
   .settings-rows > div { align-items: flex-start; flex-direction: column; gap: 5px; padding: 12px 14px; }
   .settings-rows > div > span:first-child { width: auto; }
+  .about-product { align-items: flex-start; flex-wrap: wrap; padding: 18px; }
+  .about-app-icon { width: 54px; height: 54px; border-radius: 12px; }
+  .about-product-copy { padding-top: 2px; }
+  .about-version { width: 100%; margin-left: 0; padding: 13px 0 0; align-items: flex-start; border-top: 1px solid var(--line); }
+  .about-content-grid { grid-template-columns: 1fr; }
+  .about-source { position: static; }
+  .about-release { grid-template-columns: 1fr; gap: 13px; padding: 18px; }
+  .about-release-meta { align-items: center; flex-direction: row; flex-wrap: wrap; }
   .two-columns, .three-columns, .four-columns { grid-template-columns: 1fr; }
   .benchmark-config-grid, .benchmark-mode-row { grid-template-columns: 1fr 1fr; }
   .provider-route-strip { grid-template-columns: 1fr 1fr; }
