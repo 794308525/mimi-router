@@ -2,6 +2,13 @@
 
 This project follows semantic versioning. Every feature update must keep the application version and both language variants of the release notes in sync.
 
+## 0.2.16 - 2026-08-17
+
+- Added an OpenAI Chat Completions endpoint with native streaming and non-streaming Chat forwarding.
+- Channels that explicitly do not support Chat now fall back to streaming Responses, translated into Chat text, tool calls, finish reasons, and token usage.
+- Added persistent Chat capability detection per channel while preventing rate limits, authentication failures, timeouts, and server errors from being misclassified as unsupported.
+- Request details and upstream attempts now record the client protocol, upstream protocol, and compatibility conversion path.
+
 ## 0.2.15 - 2026-08-16
 
 - Added server-side pagination, status and provider filters, and live refresh enabled by default for request records.

@@ -86,6 +86,9 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/v1/responses") {
       return engine.handle(req, res);
     }
+    if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
+      return engine.handle(req, res, { upstreamEndpoint: "chat/completions", clientProtocol: "chat" });
+    }
     if (url.pathname.startsWith("/api/")) {
       return await handleApi(req, res, url);
     }

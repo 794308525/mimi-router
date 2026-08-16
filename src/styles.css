@@ -373,6 +373,9 @@ tbody tr:hover td { background: #fafcfb; }
 .provider-drag-handle:active { cursor: grabbing; }
 .provider-drag-handle:disabled { cursor: wait; }
 .provider-status-cell { display: flex; align-items: center; gap: 10px; }
+.provider-chat-support { color: var(--muted); font-size: 10px; white-space: nowrap; }
+.provider-chat-support.supported { color: var(--accent-dark); }
+.provider-chat-support.unsupported { color: var(--warn-dark); }
 tbody tr.is-dragging td { opacity: .38; }
 tbody tr.is-drag-over-before td { box-shadow: inset 0 2px 0 var(--tech); }
 tbody tr.is-drag-over-after td { box-shadow: inset 0 -2px 0 var(--tech); }

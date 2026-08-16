@@ -4,16 +4,89 @@ const port = Number(process.env.MOCK_PORT || 19091);
 let sameRaceCalls = 0;
 let recoverEarlyCalls = 0;
 let recoverLateCalls = 0;
+const chatRequestCounts = new Map();
 
 const server = createServer((req, res) => {
   const compact = req.url?.endsWith("/responses/compact");
-  if (req.method !== "POST" || (!req.url?.endsWith("/responses") && !compact)) {
+  const chat = req.url?.endsWith("/chat/completions");
+  if (req.method === "GET" && req.url === "/__stats") {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ chat_requests: Object.fromEntries(chatRequestCounts) }));
+    return;
+  }
+  if (req.method !== "POST" || (!req.url?.endsWith("/responses") && !compact && !chat)) {
     res.writeHead(404).end();
     return;
   }
   const chunks = [];
   req.on("data", (chunk) => chunks.push(chunk));
   req.on("end", () => {
+    if (chat) {
+      chatRequestCounts.set(req.url, (chatRequestCounts.get(req.url) ?? 0) + 1);
+      if (req.url?.includes("/chat-unsupported/")) {
+        res.writeHead(404, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { code: "endpoint_not_found", message: "Chat endpoint is not supported" } }));
+        return;
+      }
+      if (req.url?.includes("/chat-rate-limit/")) {
+        res.writeHead(429, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { code: "rate_limit_exceeded", message: "Too Many Requests" } }));
+        return;
+      }
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      const actualModel = `${body.model || "mock-model"}-chat-actual`;
+      const usage = {
+        prompt_tokens: 13,
+        completion_tokens: 4,
+        total_tokens: 17,
+        prompt_tokens_details: { cached_tokens: 3 },
+        completion_tokens_details: { reasoning_tokens: 1 },
+      };
+      if (body.stream) {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write(`data: ${JSON.stringify({
+          id: "chatcmpl_mock",
+          object: "chat.completion.chunk",
+          created: 1786880000,
+          model: actualModel,
+          choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }],
+        })}\n\n`);
+        res.write(`data: ${JSON.stringify({
+          id: "chatcmpl_mock",
+          object: "chat.completion.chunk",
+          created: 1786880000,
+          model: actualModel,
+          choices: [{ index: 0, delta: { content: "CHAT_OK" }, finish_reason: null }],
+        })}\n\n`);
+        res.write(`data: ${JSON.stringify({
+          id: "chatcmpl_mock",
+          object: "chat.completion.chunk",
+          created: 1786880000,
+          model: actualModel,
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+        })}\n\n`);
+        res.write(`data: ${JSON.stringify({
+          id: "chatcmpl_mock",
+          object: "chat.completion.chunk",
+          created: 1786880000,
+          model: actualModel,
+          choices: [],
+          usage,
+        })}\n\n`);
+        res.end("data: [DONE]\n\n");
+      } else {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({
+          id: "chatcmpl_mock",
+          object: "chat.completion",
+          created: 1786880000,
+          model: actualModel,
+          choices: [{ index: 0, message: { role: "assistant", content: "CHAT_OK" }, finish_reason: "stop" }],
+          usage,
+        }));
+      }
+      return;
+    }
     if (compact && req.url?.includes("/unsupported/")) {
       res.writeHead(404, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: { message: "compact is not supported" } }));

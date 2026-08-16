@@ -262,6 +262,7 @@ function RequestDetail({
         <div><span>发送模型</span><strong>{request.upstream_model || "-"}</strong></div>
         <div><span>实际模型</span><strong>{request.actual_upstream_model || "-"}</strong></div>
         <div><span>推理强度</span><strong>{reasoningEffortLabel(request.reasoning_effort)}</strong></div>
+        <div><span>协议路径</span><strong>{protocolPathLabel(request.client_protocol, request.upstream_protocol, request.protocol_wrapped)}</strong></div>
         <div><span>路由规则</span><strong>{request.route_rule_name || "-"}</strong></div>
         <div><span>路由组</span><strong>{request.route_group_name || "-"}</strong></div>
         <div><span>最终中转</span><strong>{request.provider_name || "-"}</strong></div>
@@ -286,7 +287,7 @@ function RequestDetail({
             {request.attempts.map((attempt) => (
               <div className="attempt-item" key={attempt.id}>
                 <span className={`attempt-node ${attempt.status}`} />
-                <div><strong>{attempt.sequence}. {attempt.provider_name}</strong><small>{formatTime(attempt.started_at)} · {formatTokens(attempt.input_tokens == null && attempt.output_tokens == null ? null : (attempt.input_tokens ?? 0) + (attempt.output_tokens ?? 0))} · {formatRequestCost(attempt.total_cost_usd, attempt.cost_status)}</small><small>{attemptTimingLabel(attempt)}</small></div>
+                <div><strong>{attempt.sequence}. {attempt.provider_name}</strong><small>{formatTime(attempt.started_at)} · {attempt.protocol_wrapped ? "Responses 转 Chat" : attempt.upstream_protocol === "chat" ? "原生 Chat" : "Responses"} · {formatTokens(attempt.input_tokens == null && attempt.output_tokens == null ? null : (attempt.input_tokens ?? 0) + (attempt.output_tokens ?? 0))} · {formatRequestCost(attempt.total_cost_usd, attempt.cost_status)}</small><small>{attemptTimingLabel(attempt)}</small></div>
                 <span title={attempt.error_message || undefined}>{failureReasonLabel(attempt.termination_reason || attempt.error_category || streamPhaseLabel(attempt.stream_phase) || (attempt.status === "completed" ? "完成" : attempt.status))}</span>
                 <strong>{formatDuration(attempt.duration_ms)}</strong>
               </div>
@@ -302,6 +303,12 @@ function RequestDetail({
 function connectionLabel(reused: number | null | undefined) {
   if (reused == null) return "-";
   return reused ? "复用连接" : "新建连接";
+}
+
+function protocolPathLabel(client: string, upstream: string, wrapped: number) {
+  if (wrapped) return "Chat → Responses（兼容转换）";
+  if (client === "chat" && upstream === "chat") return "Chat → Chat（原生）";
+  return "Responses → Responses";
 }
 
 function attemptTimingLabel(attempt: RequestAttempt) {

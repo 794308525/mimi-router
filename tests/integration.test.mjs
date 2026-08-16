@@ -845,6 +845,168 @@ test("keeps partial usage and cost when a streamed client disconnects", async ()
   assert.equal(detail.attempts[0].termination_reason, "client_disconnected");
 });
 
+test("forwards native Chat Completions streams and records Chat usage", async () => {
+  const provider = await post("/api/providers", {
+    name: "Native Chat",
+    base_url: `http://127.0.0.1:${mockPort}/chat-native/v1`,
+    default_model: "gpt-5.6-terra",
+  });
+  const routes = await get("/api/routes");
+  const group = routes.groups[0];
+  try {
+    await put(`/api/route-groups/${group.id}`, {
+      ...group,
+      failover_enabled: false,
+      members: [{ provider_id: provider.id, priority: 1, weight: 100, enabled: true }],
+    });
+    const response = await fetch(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.6-terra",
+        messages: [{ role: "user", content: "hello" }],
+        stream: true,
+        stream_options: { include_usage: true },
+      }),
+    });
+    const requestId = response.headers.get("x-codex-router-request-id");
+    const stream = await response.text();
+    assert.equal(response.status, 200);
+    assert.match(stream, /CHAT_OK/);
+    assert.match(stream, /data: \[DONE\]/);
+
+    const detail = await get(`/api/requests/${requestId}`);
+    assert.equal(detail.status, "completed");
+    assert.equal(detail.client_protocol, "chat");
+    assert.equal(detail.upstream_protocol, "chat");
+    assert.equal(detail.protocol_wrapped, 0);
+    assert.equal(detail.input_tokens, 13);
+    assert.equal(detail.output_tokens, 4);
+    assert.equal(detail.cached_tokens, 3);
+    assert.equal(detail.actual_upstream_model, "gpt-5.6-terra-chat-actual");
+    assert.equal(detail.attempts[0].upstream_protocol, "chat");
+    const updated = (await get("/api/providers")).find((item) => item.id === provider.id);
+    assert.equal(updated.chat_support_status, "supported");
+  } finally {
+    await put(`/api/route-groups/${group.id}`, group);
+    await send("DELETE", `/api/providers/${provider.id}`, {});
+  }
+});
+
+test("persists unsupported Chat capability and wraps Responses for stream and non-stream clients", async () => {
+  const provider = await post("/api/providers", {
+    name: "Wrapped Chat",
+    base_url: `http://127.0.0.1:${mockPort}/chat-unsupported/v1`,
+    default_model: "gpt-5.6-terra",
+  });
+  const routes = await get("/api/routes");
+  const group = routes.groups[0];
+  try {
+    await put(`/api/route-groups/${group.id}`, {
+      ...group,
+      failover_enabled: false,
+      members: [{ provider_id: provider.id, priority: 1, weight: 100, enabled: true }],
+    });
+    const first = await fetch(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.6-terra", messages: [{ role: "user", content: "hello" }], stream: false }),
+    });
+    const firstBody = await first.json();
+    const firstId = first.headers.get("x-codex-router-request-id");
+    assert.equal(first.status, 200);
+    assert.equal(firstBody.object, "chat.completion");
+    assert.equal(firstBody.choices[0].message.content, "OK");
+    assert.equal(firstBody.usage.prompt_tokens, 12);
+
+    const firstDetail = await get(`/api/requests/${firstId}`);
+    assert.equal(firstDetail.status, "completed");
+    assert.equal(firstDetail.attempts.length, 2);
+    assert.equal(firstDetail.attempts[0].error_category, "unsupported_endpoint");
+    assert.equal(firstDetail.attempts[1].upstream_protocol, "responses");
+    assert.equal(firstDetail.attempts[1].protocol_wrapped, 1);
+    assert.equal(firstDetail.protocol_wrapped, 1);
+
+    const statsBefore = await fetch(`http://127.0.0.1:${mockPort}/__stats`).then((response) => response.json());
+    const chatCallsBefore = statsBefore.chat_requests["/chat-unsupported/v1/chat/completions"];
+    const second = await fetch(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.6-terra", messages: [{ role: "user", content: "again" }], stream: true }),
+    });
+    const secondStream = await second.text();
+    assert.equal(second.status, 200);
+    assert.match(secondStream, /"object":"chat\.completion\.chunk"/);
+    assert.match(secondStream, /"content":"OK"/);
+    assert.match(secondStream, /data: \[DONE\]/);
+    const statsAfter = await fetch(`http://127.0.0.1:${mockPort}/__stats`).then((response) => response.json());
+    assert.equal(statsAfter.chat_requests["/chat-unsupported/v1/chat/completions"], chatCallsBefore);
+
+    const updated = (await get("/api/providers")).find((item) => item.id === provider.id);
+    assert.equal(updated.chat_support_status, "unsupported");
+  } finally {
+    await put(`/api/route-groups/${group.id}`, group);
+    await send("DELETE", `/api/providers/${provider.id}`, {});
+  }
+});
+
+test("does not mark rate limits as unsupported Chat capability", async () => {
+  const provider = await post("/api/providers", {
+    name: "Rate-limited Chat",
+    base_url: `http://127.0.0.1:${mockPort}/chat-rate-limit/v1`,
+    default_model: "gpt-5.6-terra",
+    failure_threshold: 5,
+  });
+  const routes = await get("/api/routes");
+  const group = routes.groups[0];
+  try {
+    await put(`/api/route-groups/${group.id}`, {
+      ...group,
+      failover_enabled: false,
+      members: [{ provider_id: provider.id, priority: 1, weight: 100, enabled: true }],
+    });
+    const response = await fetch(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.6-terra", messages: [{ role: "user", content: "hello" }], stream: false }),
+    });
+    assert.equal(response.status, 429);
+    const updated = (await get("/api/providers")).find((item) => item.id === provider.id);
+    assert.equal(updated.chat_support_status, "unknown");
+  } finally {
+    await put(`/api/route-groups/${group.id}`, group);
+    await send("DELETE", `/api/providers/${provider.id}`, {});
+  }
+});
+
+test("returns an OpenAI error when a wrapped non-stream Chat response fails after partial output", async () => {
+  const provider = await post("/api/providers", {
+    name: "Wrapped Chat late failure",
+    base_url: `http://127.0.0.1:${mockPort}/chat-unsupported/late-server-error/v1`,
+    default_model: "gpt-5.6-terra",
+  });
+  const routes = await get("/api/routes");
+  const group = routes.groups[0];
+  try {
+    await put(`/api/route-groups/${group.id}`, {
+      ...group,
+      failover_enabled: false,
+      members: [{ provider_id: provider.id, priority: 1, weight: 100, enabled: true }],
+    });
+    const response = await fetch(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.6-terra", messages: [{ role: "user", content: "hello" }], stream: false }),
+    });
+    const payload = await response.json();
+    assert.equal(response.status, 502);
+    assert.equal(payload.error.message, "Late server failure");
+  } finally {
+    await put(`/api/route-groups/${group.id}`, group);
+    await send("DELETE", `/api/providers/${provider.id}`, {});
+  }
+});
+
 async function get(path) {
   const response = await fetch(`http://127.0.0.1:${gatewayPort}${path}`);
   const text = await response.text();

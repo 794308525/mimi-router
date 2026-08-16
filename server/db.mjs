@@ -36,6 +36,9 @@ export function createDatabase(dataDir) {
       last_error_at TEXT,
       last_error TEXT,
       consecutive_slow_first_tokens INTEGER NOT NULL DEFAULT 0,
+      chat_support_status TEXT NOT NULL DEFAULT 'unknown',
+      chat_support_checked_at TEXT,
+      chat_support_error TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -97,6 +100,9 @@ export function createDatabase(dataDir) {
       upstream_model TEXT NOT NULL DEFAULT '',
       actual_upstream_model TEXT NOT NULL DEFAULT '',
       reasoning_effort TEXT NOT NULL DEFAULT '',
+      client_protocol TEXT NOT NULL DEFAULT 'responses',
+      upstream_protocol TEXT NOT NULL DEFAULT '',
+      protocol_wrapped INTEGER NOT NULL DEFAULT 0,
       route_rule_id TEXT,
       route_group_id TEXT,
       final_provider_id TEXT,
@@ -130,6 +136,8 @@ export function createDatabase(dataDir) {
       request_id TEXT NOT NULL,
       sequence INTEGER NOT NULL,
       provider_id TEXT NOT NULL,
+      upstream_protocol TEXT NOT NULL DEFAULT 'responses',
+      protocol_wrapped INTEGER NOT NULL DEFAULT 0,
       actual_upstream_model TEXT NOT NULL DEFAULT '',
       started_at TEXT NOT NULL,
       headers_at TEXT,
@@ -212,6 +220,9 @@ export function createDatabase(dataDir) {
   ensureColumn(db, "providers", "cost_multiplier", "REAL NOT NULL DEFAULT 1");
   ensureColumn(db, "route_groups", "provider_retry_attempts", "INTEGER NOT NULL DEFAULT 2");
   ensureColumn(db, "providers", "consecutive_slow_first_tokens", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "providers", "chat_support_status", "TEXT NOT NULL DEFAULT 'unknown'");
+  ensureColumn(db, "providers", "chat_support_checked_at", "TEXT");
+  ensureColumn(db, "providers", "chat_support_error", "TEXT");
   ensureColumn(db, "router_settings", "api_auth_enabled", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "router_settings", "first_token_timeout_policy", "TEXT NOT NULL DEFAULT 'off'");
   ensureColumn(db, "router_settings", "first_token_timeout_mode", "TEXT NOT NULL DEFAULT 'retry_then_switch'");
@@ -223,6 +234,9 @@ export function createDatabase(dataDir) {
   ensureColumn(db, "requests", "upstream_wait_ms", "INTEGER");
   ensureColumn(db, "requests", "actual_upstream_model", "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "requests", "reasoning_effort", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, "requests", "client_protocol", "TEXT NOT NULL DEFAULT 'responses'");
+  ensureColumn(db, "requests", "upstream_protocol", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, "requests", "protocol_wrapped", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "request_attempts", "headers_at", "TEXT");
   ensureColumn(db, "request_attempts", "headers_ms", "INTEGER");
   ensureColumn(db, "request_attempts", "connection_reused", "INTEGER");
@@ -230,6 +244,8 @@ export function createDatabase(dataDir) {
   ensureColumn(db, "request_attempts", "request_upload_ms", "INTEGER");
   ensureColumn(db, "request_attempts", "upstream_wait_ms", "INTEGER");
   ensureColumn(db, "request_attempts", "actual_upstream_model", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, "request_attempts", "upstream_protocol", "TEXT NOT NULL DEFAULT 'responses'");
+  ensureColumn(db, "request_attempts", "protocol_wrapped", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "requests", "cache_creation_tokens", "INTEGER");
   ensureColumn(db, "requests", "input_cost_usd", "REAL");
   ensureColumn(db, "requests", "cached_input_cost_usd", "REAL");
@@ -801,6 +817,13 @@ export function saveProvider(db, input, id = randomUUID()) {
     existing?.created_at ?? timestamp,
     timestamp,
   );
+  if (existing && existing.base_url !== values.base_url) {
+    db.prepare(`
+      UPDATE providers
+         SET chat_support_status = 'unknown', chat_support_checked_at = NULL, chat_support_error = NULL
+       WHERE id = ?
+    `).run(id);
+  }
   return getProvider(db, id);
 }
 

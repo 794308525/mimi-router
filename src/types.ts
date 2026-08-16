@@ -36,6 +36,9 @@ export type Provider = {
   last_error_at: string | null;
   last_error: string | null;
   consecutive_slow_first_tokens: number;
+  chat_support_status: "unknown" | "supported" | "unsupported";
+  chat_support_checked_at: string | null;
+  chat_support_error: string | null;
 };
 
 export type RouterSettings = {
@@ -137,6 +140,8 @@ export type RequestAttempt = {
   sequence: number;
   provider_id: string;
   provider_name: string;
+  upstream_protocol: "responses" | "chat";
+  protocol_wrapped: number;
   actual_upstream_model: string;
   started_at: string;
   headers_at: string | null;
@@ -189,6 +194,9 @@ export type RequestRecord = {
   upstream_model: string;
   actual_upstream_model: string;
   reasoning_effort: string;
+  client_protocol: "responses" | "chat";
+  upstream_protocol: "responses" | "chat" | "";
+  protocol_wrapped: number;
   route_rule_id: string | null;
   route_group_id: string | null;
   final_provider_id: string | null;

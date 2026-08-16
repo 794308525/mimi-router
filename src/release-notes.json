@@ -1,6 +1,24 @@
 {
-  "currentVersion": "0.2.15",
+  "currentVersion": "0.2.16",
   "releases": [
+    {
+      "version": "0.2.16",
+      "date": "2026-08-17",
+      "notes": {
+        "zh-CN": [
+          "新增 OpenAI Chat Completions 入口，支持原生 Chat 流式与非流式请求转发。",
+          "渠道明确不支持 Chat 时自动改用 Responses 流式协议，并转换为 Chat 文本、工具调用、结束原因和 Token 用量格式。",
+          "新增渠道 Chat 能力探测和持久化记忆，限流、鉴权、超时和服务器错误不会被误判为不支持。",
+          "请求详情和上游尝试新增客户端协议、上游协议和兼容转换记录。"
+        ],
+        "en": [
+          "Added an OpenAI Chat Completions endpoint with native streaming and non-streaming Chat forwarding.",
+          "Channels that explicitly do not support Chat now fall back to streaming Responses, translated into Chat text, tool calls, finish reasons, and token usage.",
+          "Added persistent Chat capability detection per channel while preventing rate limits, authentication failures, timeouts, and server errors from being misclassified as unsupported.",
+          "Request details and upstream attempts now record the client protocol, upstream protocol, and compatibility conversion path."
+        ]
+      }
+    },
     {
       "version": "0.2.15",
       "date": "2026-08-16",

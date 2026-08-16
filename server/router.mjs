@@ -4,6 +4,14 @@ import { getSecret } from "./secrets.mjs";
 import { DEFAULT_MODEL } from "./constants.mjs";
 import { calculateOfficialCost } from "./pricing.mjs";
 import { fetchWithNetworkTiming, networkTimingForError } from "./network-timing.mjs";
+import {
+  ChatCompatibilityError,
+  chatRequestToResponses,
+  chatUsageToResponseUsage,
+  createResponsesToChatBridge,
+  isChatEndpointUnsupported,
+  upstreamEndpointUrl,
+} from "./chat-protocol.mjs";
 
 const ACTIVE_STATUSES = new Set(["received", "routing", "connecting", "streaming"]);
 const CLIENT_TERMINATION_REASONS = new Set(["user_cancelled", "client_disconnected"]);
@@ -76,11 +84,17 @@ function requestStatusForTermination(reason) {
 }
 
 function streamPhaseForPayload(payload) {
-  const type = String(payload?.type || "");
+  const type = String(payload?.type || payload?.object || "");
   if (type === "response.created") return "headers";
   if (type === "response.completed") return "completed";
   if (type === "response.incomplete") return "incomplete";
   if (type === "response.failed" || type === "error") return "failed";
+  if (type === "chat.completion") return payload?.error ? "failed" : "completed";
+  if (type === "chat.completion.chunk") {
+    if (payload?.error) return "failed";
+    if (payload?.choices?.some((choice) => choice?.finish_reason != null)) return "completed";
+    return "streaming";
+  }
   if (type.endsWith(".delta")) return "streaming";
   return null;
 }
@@ -99,11 +113,11 @@ export class RouterEngine {
     this.circuitWaiters = new Map();
   }
 
-  async handle(req, res, { upstreamEndpoint = "responses" } = {}) {
+  async handle(req, res, { upstreamEndpoint = "responses", clientProtocol = "responses" } = {}) {
     const requestId = randomUUID();
     const startedAt = new Date();
     const startedMono = performance.now();
-    this.createRequest(requestId, startedAt);
+    this.createRequest(requestId, startedAt, clientProtocol);
     this.publish("request.created", { request: getRequest(this.db, requestId) });
 
     const clientController = new AbortController();
@@ -137,12 +151,13 @@ export class RouterEngine {
 
     const requestedModel = String(body.model ?? DEFAULT_MODEL);
     const reasoningEffort = extractReasoningEffort(body);
-    const isStream = upstreamEndpoint === "responses" && body.stream === true;
+    const isStream = upstreamEndpoint !== "responses/compact" && body.stream === true;
     this.updateRequest(requestId, {
       status: "routing",
       requested_model: requestedModel,
       reasoning_effort: reasoningEffort,
       is_stream: isStream ? 1 : 0,
+      client_protocol: clientProtocol,
     });
     this.emitRequest(requestId, "request.status_changed");
 
@@ -169,6 +184,8 @@ export class RouterEngine {
     let maxAttempts = route.group.failover_enabled ? route.group.max_attempts : 1;
     const providerRetryLimit = route.group.provider_retry_attempts ?? 2;
     const providerRetryCounts = new Map();
+    const chatWrappedProviders = new Set();
+    let wrappedChatBody = null;
     const routerSettings = getRouterSettings(this.db);
     const requestedFirstTokenMode = routerSettings.first_token_timeout_mode;
     const firstTokenTimeoutMode = requestedFirstTokenMode.startsWith("race_") && !isRaceSafeRequest(body)
@@ -227,9 +244,43 @@ export class RouterEngine {
       const attemptStarted = new Date();
       const attemptMono = performance.now();
       const upstreamModel = requestedModel;
-      const upstreamBody = { ...body, model: upstreamModel };
+      const upstreamProtocol = clientProtocol === "chat"
+        && (provider.chat_support_status === "unsupported" || chatWrappedProviders.has(provider.id))
+        ? "responses"
+        : clientProtocol;
+      const protocolWrapped = clientProtocol === "chat" && upstreamProtocol === "responses";
+      let upstreamBody;
+      try {
+        if (protocolWrapped) {
+          wrappedChatBody ??= chatRequestToResponses({ ...body, model: upstreamModel });
+          upstreamBody = wrappedChatBody;
+        } else {
+          upstreamBody = { ...body, model: upstreamModel };
+        }
+      } catch (error) {
+        if (!(error instanceof ChatCompatibilityError)) throw error;
+        this.finishRequest(requestId, startedMono, {
+          status: "failed",
+          http_status: error.status,
+          error_category: "unsupported_chat_parameter",
+          error_message: error.message,
+          cost_status: "not_applicable",
+        });
+        sendJson(res, error.status, chatCompatibilityErrorBody(error, requestId));
+        this.controllers.delete(requestId);
+        return;
+      }
 
-      this.beginAttempt(requestId, attemptId, sequence, provider, attemptStarted, upstreamModel);
+      this.beginAttempt(
+        requestId,
+        attemptId,
+        sequence,
+        provider,
+        attemptStarted,
+        upstreamModel,
+        upstreamProtocol,
+        protocolWrapped,
+      );
       this.acquireProvider(provider.id, probe);
       this.publish("request.attempt_started", {
         request_id: requestId,
@@ -249,9 +300,10 @@ export class RouterEngine {
       try {
         const secret = getSecret(this.dataDir, provider.id);
         const signal = AbortSignal.any([clientController.signal, attemptController.signal]);
-        const timedFetch = await fetchWithNetworkTiming(responseEndpointUrl(provider.base_url, upstreamEndpoint), {
+        const targetEndpoint = protocolWrapped ? "responses" : upstreamEndpoint;
+        const timedFetch = await fetchWithNetworkTiming(responseEndpointUrl(provider.base_url, targetEndpoint), {
           method: "POST",
-          headers: upstreamHeaders(req.headers, provider, secret),
+          headers: upstreamHeaders(req.headers, provider, secret, protocolWrapped ? "text/event-stream" : null),
           body: JSON.stringify(upstreamBody),
           signal,
         });
@@ -307,6 +359,30 @@ export class RouterEngine {
         continue;
       }
 
+      let bufferedErrorResponse = null;
+      if (clientProtocol === "chat" && upstreamProtocol === "chat" && !upstream.ok
+        && [400, 404, 405, 501].includes(upstream.status)) {
+        bufferedErrorResponse = Buffer.from(await upstream.arrayBuffer());
+        const responseText = bufferedErrorResponse.toString("utf8");
+        if (isChatEndpointUnsupported(upstream.status, responseText)) {
+          clearTimeout(requestTimer);
+          this.releaseProvider(provider.id, probe);
+          const message = `${provider.name} 不支持 Chat Completions`;
+          this.markChatSupport(provider.id, "unsupported", extractUpstreamError(responseText, upstream.status));
+          this.finishAttempt(attemptId, attemptMono, "failed", upstream.status, "unsupported_endpoint", message, {
+            termination_reason: "unsupported_endpoint",
+            stream_phase: "failed",
+            last_stream_event: "chat.unsupported",
+          });
+          this.publishAttempt(requestId, attemptId);
+          chatWrappedProviders.add(provider.id);
+          maxAttempts += 1;
+          retryProviderId = provider.id;
+          finalError = { status: 502, category: "unsupported_endpoint", message };
+          continue;
+        }
+      }
+
       if (upstreamEndpoint === "responses/compact" && [404, 405].includes(upstream.status)) {
         await upstream.arrayBuffer().catch(() => null);
         clearTimeout(requestTimer);
@@ -321,7 +397,7 @@ export class RouterEngine {
 
       const classification = classifyStatus(upstream.status);
       if (classification.retryable || classification.auth) {
-        const responseText = await upstream.text().catch(() => "");
+        const responseText = bufferedErrorResponse?.toString("utf8") ?? await upstream.text().catch(() => "");
         clearTimeout(requestTimer);
         this.releaseProvider(provider.id, probe);
         const message = extractUpstreamError(responseText, upstream.status);
@@ -347,7 +423,7 @@ export class RouterEngine {
       }
 
       if (!upstream.ok) {
-        const responseBuffer = Buffer.from(await upstream.arrayBuffer());
+        const responseBuffer = bufferedErrorResponse ?? Buffer.from(await upstream.arrayBuffer());
         clearTimeout(requestTimer);
         this.releaseProvider(provider.id, probe);
         this.finishAttempt(attemptId, attemptMono, "failed", upstream.status, "request_error", `上游返回 ${upstream.status}`);
@@ -377,15 +453,22 @@ export class RouterEngine {
           upstream,
           res,
           isStream,
+          clientProtocol,
+          upstreamProtocol,
+          protocolWrapped,
+          chatIncludeUsage: clientProtocol === "chat" && body.stream_options?.include_usage === true,
           stickyTtlSeconds: route.group.sticky_enabled ? route.group.sticky_ttl_seconds : 0,
           streamIdleTimeoutMs: provider.stream_idle_timeout_ms,
-          firstTokenTimeoutMs: isStream
+          firstTokenTimeoutMs: (isStream || protocolWrapped)
             ? this.resolveFirstTokenTimeoutMs(routerSettings, provider.id, requestedModel)
             : 0,
           attemptController,
           requestTimer,
         };
-        if (isStream && firstTokenTimeoutMode.startsWith("race_") && forwardContext.firstTokenTimeoutMs > 0) {
+        if (protocolWrapped) {
+          await this.forwardWrappedChatSuccess(forwardContext);
+        } else if (isStream && upstreamProtocol === "responses"
+          && firstTokenTimeoutMode.startsWith("race_") && forwardContext.firstTokenTimeoutMs > 0) {
           await this.forwardRaceSuccess({
             ...forwardContext,
             clientController,
@@ -930,6 +1013,8 @@ export class RouterEngine {
       upstream,
       res,
       isStream,
+      upstreamProtocol,
+      protocolWrapped,
       stickyTtlSeconds,
       streamIdleTimeoutMs,
       firstTokenTimeoutMs,
@@ -942,6 +1027,7 @@ export class RouterEngine {
     let firstOutputRecorded = false;
     let semanticFailure = null;
     let incompleteFailure = null;
+    let terminalEvent = upstreamProtocol === "chat" ? "chat.completion" : "response.completed";
     const markFirstOutput = () => {
       if (firstOutputRecorded) return;
       firstOutputRecorded = true;
@@ -970,6 +1056,11 @@ export class RouterEngine {
           semanticFailure ??= semanticFailureFromPayload(payload, upstream.status);
           incompleteFailure ??= incompleteFailureFromPayload(payload);
           if (!semanticFailure && isMeaningfulStreamOutput(payload)) markFirstOutput();
+        }, () => {
+          if (upstreamProtocol === "chat") {
+            terminalEvent = "chat.completion.done";
+            this.updateAttempt(attemptId, { stream_phase: "completed", last_stream_event: terminalEvent });
+          }
         });
 
         const reader = upstream.body?.getReader();
@@ -984,6 +1075,9 @@ export class RouterEngine {
           timeoutMs: firstTokenTimeoutMs,
         });
         if (semanticFailure) throw semanticFailure;
+        if (!firstOutputRecorded && upstreamProtocol === "chat") {
+          throw new Error("Chat Completions SSE 流缺少有效 choices 输出");
+        }
         if (!firstOutputRecorded) markFirstOutput();
         this.forwardHeaders(res, upstream, requestId);
         res.statusCode = upstream.status;
@@ -1038,6 +1132,8 @@ export class RouterEngine {
         actualUpstreamModel,
         failure: semanticFailure,
         affectsProviderHealth: true,
+        upstreamProtocol,
+        protocolWrapped,
       });
       return;
     }
@@ -1056,6 +1152,8 @@ export class RouterEngine {
         actualUpstreamModel,
         failure: incompleteFailure,
         affectsProviderHealth: false,
+        upstreamProtocol,
+        protocolWrapped,
       });
       return;
     }
@@ -1072,6 +1170,163 @@ export class RouterEngine {
       usage,
       responseId,
       actualUpstreamModel,
+      upstreamProtocol,
+      protocolWrapped,
+      lastStreamEvent: terminalEvent,
+    });
+  }
+
+  async forwardWrappedChatSuccess(context) {
+    const {
+      requestId,
+      requestStartedMono,
+      attemptId,
+      attemptMono,
+      provider,
+      upstreamModel,
+      probe,
+      upstream,
+      res,
+      isStream,
+      stickyTtlSeconds,
+      streamIdleTimeoutMs,
+      firstTokenTimeoutMs,
+      requestTimer,
+    } = context;
+    let usage = {};
+    let responseId = "";
+    let actualUpstreamModel = "";
+    let semanticFailure = null;
+    let firstOutputRecorded = false;
+    const bridge = createResponsesToChatBridge({
+      stream: isStream,
+      includeUsage: Boolean(context.chatIncludeUsage),
+      requestedModel: upstreamModel,
+      onPayload: (payload) => {
+        usage = extractUsage(payload) ?? usage;
+        responseId = extractResponseId(payload) || responseId;
+        actualUpstreamModel = this.observeAttemptPayload({ requestId, attemptId, upstreamModel, payload }) || actualUpstreamModel;
+        semanticFailure ??= semanticFailureFromPayload(payload, upstream.status);
+      },
+    });
+
+    const markFirstOutput = () => {
+      if (firstOutputRecorded) return;
+      firstOutputRecorded = true;
+      const firstByteAt = new Date();
+      const ttft = Math.max(0, Math.round(performance.now() - requestStartedMono));
+      this.db.prepare("UPDATE request_attempts SET first_byte_at = ? WHERE id = ?")
+        .run(firstByteAt.toISOString(), attemptId);
+      this.updateRequest(requestId, {
+        status: isStream ? "streaming" : "connecting",
+        first_byte_at: firstByteAt.toISOString(),
+        ttft_ms: ttft,
+        http_status: upstream.status,
+        stream_phase: "streaming",
+        ...this.attemptNetworkTiming(attemptId),
+      });
+      this.recordFirstTokenSuccess(provider);
+      this.emitRequest(requestId, "request.status_changed");
+    };
+
+    try {
+      const reader = upstream.body?.getReader();
+      if (!reader) throw new Error("上游响应正文为空");
+      const buffered = [];
+      await readUntilFirstConvertedOutput({
+        reader,
+        bridge,
+        buffered,
+        attemptStartedMono: attemptMono,
+        timeoutMs: firstTokenTimeoutMs,
+      });
+      if (semanticFailure || bridge.failure) throw semanticFailure || bridgeFailureError(bridge.failure, upstream.status);
+      if (!bridge.meaningfulOutput) throw new Error("Responses SSE 流在首个输出前结束");
+      if (!firstOutputRecorded) markFirstOutput();
+      this.forwardTransformedHeaders(res, requestId, isStream);
+      res.statusCode = 200;
+      if (isStream) {
+        res.flushHeaders();
+        for (const buffer of buffered) {
+          if (!res.write(buffer)) await onceDrain(res);
+        }
+      }
+      for await (const chunk of streamReaderWithIdleTimeout(reader, streamIdleTimeoutMs)) {
+        const output = bridge.push(Buffer.from(chunk));
+        if (isStream) {
+          for (const buffer of output) {
+            if (!res.write(buffer)) await onceDrain(res);
+          }
+        }
+      }
+      const finalOutput = bridge.finish();
+      if (isStream) {
+        for (const buffer of finalOutput) {
+          if (!res.write(buffer)) await onceDrain(res);
+        }
+      }
+      if (!bridge.completed && !bridge.failure) throw new Error("Responses SSE 流缺少结束事件");
+      if (!firstOutputRecorded && bridge.meaningfulOutput) markFirstOutput();
+      if (!isStream) {
+        if (bridge.failure || semanticFailure) {
+          const failure = semanticFailure || bridgeFailureError(bridge.failure, upstream.status);
+          res.statusCode = failure.status || 502;
+          res.end(JSON.stringify({
+            error: {
+              message: failure.message,
+              type: bridge.failure?.type || "server_error",
+              param: bridge.failure?.param ?? null,
+              code: bridge.failure?.code || failure.code || null,
+            },
+          }));
+        } else {
+          res.end(JSON.stringify(bridge.completion()));
+        }
+      } else {
+        res.end();
+      }
+    } finally {
+      clearTimeout(requestTimer);
+    }
+
+    if (bridge.failure || semanticFailure) {
+      const failure = semanticFailure || bridgeFailureError(bridge.failure, upstream.status);
+      this.completeTerminalFailure({
+        requestId,
+        requestStartedMono,
+        attemptId,
+        attemptMono,
+        provider,
+        upstreamModel,
+        probe,
+        upstream,
+        usage,
+        responseId,
+        actualUpstreamModel,
+        failure,
+        affectsProviderHealth: true,
+        upstreamProtocol: "responses",
+        protocolWrapped: true,
+        lastStreamEvent: failure.lastStreamEvent || "response.failed",
+      });
+      return;
+    }
+    this.completeSuccess({
+      requestId,
+      requestStartedMono,
+      attemptId,
+      attemptMono,
+      provider,
+      upstreamModel,
+      probe,
+      upstream,
+      stickyTtlSeconds,
+      usage,
+      responseId,
+      actualUpstreamModel,
+      upstreamProtocol: "responses",
+      protocolWrapped: true,
+      lastStreamEvent: "response.completed",
     });
   }
 
@@ -1088,25 +1343,34 @@ export class RouterEngine {
     usage,
     responseId,
     actualUpstreamModel,
+    upstreamProtocol = "responses",
+    protocolWrapped = false,
+    lastStreamEvent,
   }) {
+    const terminalEvent = lastStreamEvent || (upstreamProtocol === "chat" ? "chat.completion.done" : "response.completed");
     if (usage && (usage.input_tokens != null || usage.output_tokens != null)) {
       this.updateAttempt(attemptId, {
         ...usageFieldsForModel(this.db, upstreamModel, usage, true),
         stream_phase: "completed",
-        last_stream_event: "response.completed",
+        last_stream_event: terminalEvent,
         upstream_response_id: responseId || undefined,
         actual_upstream_model: actualUpstreamModel || "",
+        upstream_protocol: upstreamProtocol,
+        protocol_wrapped: protocolWrapped ? 1 : 0,
       });
     }
     this.syncRequestUsage(requestId);
     this.releaseProvider(provider.id, probe);
+    if (upstreamProtocol === "chat") this.markChatSupport(provider.id, "supported");
     this.recordSuccess(provider);
     this.finishAttempt(attemptId, attemptMono, "completed", upstream.status, null, null, {
       termination_reason: null,
       stream_phase: "completed",
-      last_stream_event: "response.completed",
+      last_stream_event: terminalEvent,
       upstream_response_id: responseId || undefined,
       actual_upstream_model: actualUpstreamModel || "",
+      upstream_protocol: upstreamProtocol,
+      protocol_wrapped: protocolWrapped ? 1 : 0,
       cost_status: this.requestCostStatus(requestId),
     });
     this.publishAttempt(requestId, attemptId);
@@ -1119,8 +1383,10 @@ export class RouterEngine {
       actual_upstream_model: actualUpstreamModel || "",
       termination_reason: null,
       stream_phase: "completed",
-      last_stream_event: "response.completed",
+      last_stream_event: terminalEvent,
       upstream_response_id: responseId || undefined,
+      upstream_protocol: upstreamProtocol,
+      protocol_wrapped: protocolWrapped ? 1 : 0,
       cost_status: this.requestCostStatus(requestId),
     });
   }
@@ -1139,25 +1405,33 @@ export class RouterEngine {
     actualUpstreamModel,
     failure,
     affectsProviderHealth,
+    upstreamProtocol = "responses",
+    protocolWrapped = false,
+    lastStreamEvent,
   }) {
+    const terminalEvent = lastStreamEvent || failure.lastStreamEvent || "response.failed";
     const usageFields = usage && (usage.input_tokens != null || usage.output_tokens != null)
       ? usageFieldsForModel(this.db, upstreamModel, usage, true)
       : { cost_status: "unknown" };
     this.updateAttempt(attemptId, {
       ...usageFields,
       stream_phase: failure.streamPhase || "failed",
-      last_stream_event: failure.lastStreamEvent || "response.failed",
+      last_stream_event: terminalEvent,
       upstream_response_id: responseId || undefined,
       actual_upstream_model: actualUpstreamModel || "",
+      upstream_protocol: upstreamProtocol,
+      protocol_wrapped: protocolWrapped ? 1 : 0,
     });
     this.releaseProvider(provider.id, probe);
     if (affectsProviderHealth) this.recordFailure(provider, failure.category);
     this.finishAttempt(attemptId, attemptMono, "failed", upstream.status, failure.category, failure.message, {
       termination_reason: failure.category,
       stream_phase: failure.streamPhase || "failed",
-      last_stream_event: failure.lastStreamEvent || "response.failed",
+      last_stream_event: terminalEvent,
       upstream_response_id: responseId || undefined,
       actual_upstream_model: actualUpstreamModel || "",
+      upstream_protocol: upstreamProtocol,
+      protocol_wrapped: protocolWrapped ? 1 : 0,
       cost_status: usageFields.cost_status,
     });
     this.publishAttempt(requestId, attemptId);
@@ -1172,8 +1446,10 @@ export class RouterEngine {
       error_message: failure.message,
       termination_reason: failure.category,
       stream_phase: failure.streamPhase || "failed",
-      last_stream_event: failure.lastStreamEvent || "response.failed",
+      last_stream_event: terminalEvent,
       upstream_response_id: responseId || undefined,
+      upstream_protocol: upstreamProtocol,
+      protocol_wrapped: protocolWrapped ? 1 : 0,
       cost_status: costStatus,
     });
   }
@@ -1481,26 +1757,46 @@ export class RouterEngine {
     return true;
   }
 
-  createRequest(id, startedAt) {
+  createRequest(id, startedAt, clientProtocol = "responses") {
     this.db.prepare(
-      "INSERT INTO requests (id, started_at, status, requested_model) VALUES (?, ?, 'received', '')",
-    ).run(id, startedAt.toISOString());
+      "INSERT INTO requests (id, started_at, status, requested_model, client_protocol) VALUES (?, ?, 'received', '', ?)",
+    ).run(id, startedAt.toISOString(), clientProtocol);
   }
 
-  beginAttempt(requestId, attemptId, sequence, provider, startedAt, upstreamModel) {
+  beginAttempt(
+    requestId,
+    attemptId,
+    sequence,
+    provider,
+    startedAt,
+    upstreamModel,
+    upstreamProtocol = "responses",
+    protocolWrapped = false,
+  ) {
     const current = this.db.prepare(
       "SELECT final_provider_id, is_failover FROM requests WHERE id = ?",
     ).get(requestId);
     const changedProvider = Boolean(current?.final_provider_id && current.final_provider_id !== provider.id);
     this.db.prepare(`
-      INSERT INTO request_attempts (id, request_id, sequence, provider_id, started_at, status)
-      VALUES (?, ?, ?, ?, ?, 'connecting')
-    `).run(attemptId, requestId, sequence, provider.id, startedAt.toISOString());
+      INSERT INTO request_attempts
+        (id, request_id, sequence, provider_id, upstream_protocol, protocol_wrapped, started_at, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'connecting')
+    `).run(
+      attemptId,
+      requestId,
+      sequence,
+      provider.id,
+      upstreamProtocol,
+      protocolWrapped ? 1 : 0,
+      startedAt.toISOString(),
+    );
     this.updateRequest(requestId, {
       status: "connecting",
       final_provider_id: provider.id,
       upstream_model: upstreamModel,
       actual_upstream_model: "",
+      upstream_protocol: upstreamProtocol,
+      protocol_wrapped: protocolWrapped ? 1 : 0,
       attempt_count: sequence,
       is_failover: current?.is_failover || changedProvider ? 1 : 0,
       stream_phase: "connecting",
@@ -1543,6 +1839,7 @@ export class RouterEngine {
       "headers_at", "headers_ms", "connection_reused", "network_connect_ms", "request_upload_ms",
       "upstream_wait_ms", "first_byte_at", "ended_at", "duration_ms", "ttft_ms", "status",
       "requested_model", "upstream_model", "actual_upstream_model", "reasoning_effort", "route_rule_id", "route_group_id",
+      "client_protocol", "upstream_protocol", "protocol_wrapped",
       "final_provider_id", "attempt_count", "is_stream", "is_failover",
       "input_tokens", "output_tokens", "cached_tokens", "reasoning_tokens",
       "cache_creation_tokens", "input_cost_usd", "cached_input_cost_usd",
@@ -1565,6 +1862,7 @@ export class RouterEngine {
       "input_cost_usd", "cached_input_cost_usd", "cache_creation_cost_usd", "output_cost_usd", "total_cost_usd",
       "pricing_model", "pricing_source", "termination_reason", "stream_phase", "last_stream_event",
       "upstream_response_id", "actual_upstream_model", "cost_status",
+      "upstream_protocol", "protocol_wrapped",
     ];
     const entries = Object.entries(fields).filter(([key, value]) => allowed.includes(key) && value !== undefined);
     if (entries.length === 0) return;
@@ -1580,7 +1878,7 @@ export class RouterEngine {
   }
 
   observeAttemptPayload({ requestId, attemptId, upstreamModel, payload }) {
-    const eventType = String(payload?.type || "");
+    const eventType = String(payload?.type || payload?.object || "");
     const phase = streamPhaseForPayload(payload);
     const usage = extractUsage(payload);
     const responseId = extractResponseId(payload);
@@ -1594,6 +1892,8 @@ export class RouterEngine {
       || eventType === "response.completed"
       || eventType === "response.incomplete"
       || eventType === "response.failed"
+      || eventType === "chat.completion"
+      || eventType === "chat.completion.chunk"
       || eventType === "error";
     if (!usageChanged && !phaseChanged && !responseChanged && !modelChanged && !importantEvent) {
       return actualUpstreamModel || previous.actualUpstreamModel || "";
@@ -1688,6 +1988,25 @@ export class RouterEngine {
       if (!HOP_BY_HOP_HEADERS.has(key.toLowerCase())) res.setHeader(key, value);
     }
     res.setHeader("x-codex-router-request-id", requestId);
+  }
+
+  forwardTransformedHeaders(res, requestId, stream) {
+    res.setHeader("content-type", stream ? "text/event-stream; charset=utf-8" : "application/json; charset=utf-8");
+    res.setHeader("cache-control", "no-cache, no-transform");
+    if (stream) {
+      res.setHeader("connection", "keep-alive");
+      res.setHeader("x-accel-buffering", "no");
+    }
+    res.setHeader("x-codex-router-request-id", requestId);
+  }
+
+  markChatSupport(providerId, status, error = null) {
+    this.db.prepare(`
+      UPDATE providers
+         SET chat_support_status = ?, chat_support_checked_at = ?, chat_support_error = ?, updated_at = ?
+       WHERE id = ?
+    `).run(status, new Date().toISOString(), error, new Date().toISOString(), providerId);
+    this.publish("provider.changed", { provider: getProvider(this.db, providerId) });
   }
 
   stickyProvider(previousResponseId) {
@@ -1821,16 +2140,10 @@ function responsesUrl(baseUrl) {
 }
 
 function responseEndpointUrl(baseUrl, endpoint) {
-  const normalized = baseUrl.replace(/\/+$/, "");
-  if (endpoint === "responses/compact") {
-    if (normalized.endsWith("/responses/compact")) return normalized;
-    if (normalized.endsWith("/responses")) return `${normalized}/compact`;
-    return `${normalized}/responses/compact`;
-  }
-  return normalized.endsWith("/responses") ? normalized : `${normalized}/responses`;
+  return upstreamEndpointUrl(baseUrl, endpoint);
 }
 
-function upstreamHeaders(incoming, provider, secret) {
+function upstreamHeaders(incoming, provider, secret, acceptOverride = null) {
   const headers = {};
   for (const [key, value] of Object.entries(incoming)) {
     if (
@@ -1843,7 +2156,7 @@ function upstreamHeaders(incoming, provider, secret) {
     }
   }
   headers["content-type"] = "application/json";
-  headers.accept = incoming.accept || "text/event-stream, application/json";
+  headers.accept = acceptOverride || incoming.accept || "text/event-stream, application/json";
   if (secret) headers.authorization = `Bearer ${secret}`;
   Object.assign(headers, parseHeaders(provider.headers_json));
   return headers;
@@ -1947,7 +2260,11 @@ function sameProviderRetryCategory(status, message, code = "") {
 }
 
 function extractUsage(payload) {
-  return payload?.response?.usage ?? payload?.usage ?? null;
+  const usage = payload?.response?.usage ?? payload?.usage ?? null;
+  if (!usage) return null;
+  if (usage.input_tokens != null || usage.output_tokens != null) return usage;
+  if (usage.prompt_tokens != null || usage.completion_tokens != null) return chatUsageToResponseUsage(usage);
+  return null;
 }
 
 function extractResponseModel(payload) {
@@ -1991,7 +2308,14 @@ function extractResponseId(payload) {
 }
 
 function isMeaningfulStreamOutput(payload) {
-  const type = String(payload?.type || "");
+  const type = String(payload?.type || payload?.object || "");
+  if (type === "chat.completion.chunk") {
+    return (payload?.choices || []).some((choice) => {
+      if (choice?.finish_reason != null) return true;
+      const delta = choice?.delta || {};
+      return Boolean(delta.content || delta.refusal || delta.tool_calls?.length || delta.function_call);
+    });
+  }
   if (["response.completed", "response.incomplete"].includes(type)) return true;
   if (!type.endsWith(".delta")) return false;
   const delta = payload?.delta ?? payload?.arguments_delta ?? payload?.text;
@@ -2002,7 +2326,7 @@ function isRaceSafeRequest(body) {
   return !Array.isArray(body?.tools) || body.tools.length === 0;
 }
 
-function createSseInspector(onPayload) {
+function createSseInspector(onPayload, onDone) {
   const decoder = new TextDecoder();
   let pending = "";
   const process = () => {
@@ -2011,7 +2335,11 @@ function createSseInspector(onPayload) {
     for (const line of lines) {
       if (!line.startsWith("data:")) continue;
       const raw = line.slice(5).trim();
-      if (!raw || raw === "[DONE]") continue;
+      if (!raw) continue;
+      if (raw === "[DONE]") {
+        onDone?.();
+        continue;
+      }
       try {
         onPayload(JSON.parse(raw));
       } catch {
@@ -2195,6 +2523,45 @@ async function readUntilFirstOutput({
   }
 }
 
+async function readUntilFirstConvertedOutput({
+  reader,
+  bridge,
+  buffered,
+  attemptStartedMono,
+  timeoutMs,
+}) {
+  const deadline = timeoutMs > 0 ? attemptStartedMono + timeoutMs : null;
+  try {
+    while (!bridge.meaningfulOutput && !bridge.failure) {
+      let result;
+      if (deadline == null) {
+        result = await reader.read();
+      } else {
+        const remaining = deadline - performance.now();
+        if (remaining <= 0) throw new FirstTokenTimeoutError(timeoutMs);
+        let timer;
+        const timeout = new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new FirstTokenTimeoutError(timeoutMs)), remaining);
+        });
+        try {
+          result = await Promise.race([reader.read(), timeout]);
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+      if (result.done) {
+        buffered.push(...bridge.finish());
+        return;
+      }
+      buffered.push(...bridge.push(Buffer.from(result.value)));
+    }
+  } catch (error) {
+    await reader.cancel(error).catch(() => {});
+    reader.releaseLock();
+    throw error;
+  }
+}
+
 async function* streamReaderWithIdleTimeout(reader, timeoutMs) {
   try {
     while (true) {
@@ -2241,6 +2608,29 @@ function errorBody(message, requestId) {
       request_id: requestId,
     },
   };
+}
+
+function chatCompatibilityErrorBody(error, requestId) {
+  return {
+    error: {
+      message: error.message,
+      type: "invalid_request_error",
+      param: error.param,
+      code: error.code,
+      request_id: requestId,
+    },
+  };
+}
+
+function bridgeFailureError(failure, status) {
+  const message = String(failure?.message || "Responses upstream failed");
+  const code = String(failure?.code || "");
+  const category = sameProviderRetryCategory(status, message, code) || "upstream_semantic_failure";
+  const errorStatus = status >= 400 ? status : category === "rate_limit" ? 429 : category === "capacity" ? 503 : 502;
+  const error = new UpstreamSemanticFailureError(errorStatus, message, category, code);
+  error.streamPhase = "failed";
+  error.lastStreamEvent = "response.failed";
+  return error;
 }
 
 function safeMessage(error) {

@@ -524,6 +524,10 @@ export function ProvidersPage({
                   <td>
                     <div className="provider-status-cell">
                       <ProviderStatus provider={provider} />
+                      <span
+                        className={`provider-chat-support ${provider.chat_support_status}`}
+                        title={provider.chat_support_error || "Chat Completions 能力会在首次 Chat 请求时自动探测"}
+                      >Chat {provider.chat_support_status === "supported" ? "原生" : provider.chat_support_status === "unsupported" ? "转换" : "待探测"}</span>
                       <label className="switch" title={provider.enabled ? `停用 ${provider.name}` : `启用 ${provider.name}`}>
                         <input type="checkbox" aria-label={provider.enabled ? `停用 ${provider.name}` : `启用 ${provider.name}`} checked={provider.enabled} onChange={() => toggle(provider)} />
                         <span />
