@@ -2,7 +2,7 @@
 
 use std::{
     fs::{self, OpenOptions},
-    io::{Read, Write},
+    io::{self, Read, Write},
     net::{SocketAddr, TcpStream},
     process::{Child, Command, Stdio},
     sync::Mutex,
@@ -47,6 +47,22 @@ fn gateway_ready() -> bool {
     response.starts_with("HTTP/1.1 200") && response.contains("\"status\":\"running\"")
 }
 
+fn append_gateway_log(app: &AppHandle, message: &str) {
+    let Ok(log_dir) = app.path().app_log_dir() else {
+        return;
+    };
+    if fs::create_dir_all(&log_dir).is_err() {
+        return;
+    }
+    if let Ok(mut log) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_dir.join("gateway.log"))
+    {
+        let _ = writeln!(log, "[desktop] {message}");
+    }
+}
+
 fn start_gateway(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     if gateway_ready() {
         return Ok(());
@@ -63,22 +79,53 @@ fn start_gateway(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(target_os = "windows"))]
     let node_path = resource_dir.join("runtime/node");
     let server_path = resource_dir.join("server/index.mjs");
-    let log = OpenOptions::new()
+    let mut log = OpenOptions::new()
         .create(true)
         .append(true)
         .open(log_dir.join("gateway.log"))?;
+    writeln!(
+        log,
+        "[desktop] 准备启动网关: resource_dir={}, node={}, server={}",
+        resource_dir.display(),
+        node_path.display(),
+        server_path.display()
+    )?;
+
+    if !node_path.is_file() || !server_path.is_file() {
+        let error = io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "桌面运行资源不完整: node_exists={}, server_exists={}",
+                node_path.is_file(),
+                server_path.is_file()
+            ),
+        );
+        writeln!(log, "[desktop] 本地网关启动失败: {error}")?;
+        return Err(error.into());
+    }
+
+    let output_log = log.try_clone()?;
     let error_log = log.try_clone()?;
 
-    let child = Command::new(node_path)
+    let child = match Command::new(&node_path)
         .arg("--no-warnings")
-        .arg(server_path)
+        .arg("server/index.mjs")
+        .current_dir(&resource_dir)
         .env("CODEX_ROUTER_DATA_DIR", &data_dir)
         .env("CODEX_ROUTER_HOST", "0.0.0.0")
         .env("CODEX_ROUTER_PORT", "18080")
         .stdin(Stdio::null())
-        .stdout(Stdio::from(log))
+        .stdout(Stdio::from(output_log))
         .stderr(Stdio::from(error_log))
-        .spawn()?;
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            writeln!(log, "[desktop] 本地网关进程创建失败: {error}")?;
+            return Err(error.into());
+        }
+    };
+    writeln!(log, "[desktop] 本地网关进程已创建: pid={}", child.id())?;
 
     *app.state::<GatewayProcess>().0.lock().unwrap() = Some(child);
     Ok(())
@@ -91,8 +138,29 @@ fn wait_for_gateway(app: AppHandle) {
                 show_main_window(&app);
                 return;
             }
+
+            let exit_message = {
+                let state = app.state::<GatewayProcess>();
+                let message = match state.0.lock() {
+                    Ok(mut process) => match process.as_mut().map(Child::try_wait) {
+                        Some(Ok(Some(status))) => {
+                            Some(format!("本地网关启动后退出: status={status}"))
+                        }
+                        Some(Err(error)) => Some(format!("读取本地网关状态失败: {error}")),
+                        _ => None,
+                    },
+                    Err(_) => Some("读取本地网关状态失败: 进程状态锁异常".to_string()),
+                };
+                message
+            };
+            if let Some(message) = exit_message {
+                append_gateway_log(&app, &message);
+                show_main_window(&app);
+                return;
+            }
             thread::sleep(Duration::from_millis(100));
         }
+        append_gateway_log(&app, "等待本地网关就绪超时");
         show_main_window(&app);
     });
 }
@@ -145,9 +213,12 @@ fn main() {
                 show_main_window(app.handle());
             } else {
                 if let Err(error) = start_gateway(app) {
+                    append_gateway_log(app.handle(), &format!("本地网关启动失败: {error}"));
                     eprintln!("[desktop] 本地网关启动失败: {error}");
+                    show_main_window(app.handle());
+                } else {
+                    wait_for_gateway(app.handle().clone());
                 }
-                wait_for_gateway(app.handle().clone());
             }
             Ok(())
         })
