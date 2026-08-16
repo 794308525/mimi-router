@@ -18,6 +18,8 @@ import {
   formatUsd,
 } from "../components/Common";
 
+const PROVIDER_NAMES_VISIBLE_KEY = "mimi-router.provider-names-visible";
+
 export function Overview({
   service,
   providers,
@@ -40,7 +42,9 @@ export function Overview({
   setNotice: (notice: Notice) => void;
 }) {
   const [trendRange, setTrendRange] = useState<"today" | "yesterday" | "7d">("today");
+  const [trendMetric, setTrendMetric] = useState<TrendMetric>("tokens");
   const [summaryRange, setSummaryRange] = useState<"today" | "yesterday" | "seven_days">("today");
+  const [providerNamesVisible, setProviderNamesVisible] = useState(readProviderNamesVisible);
   const [hoveredTrend, setHoveredTrend] = useState<number | null>(null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [firstTokenSeconds, setFirstTokenSeconds] = useState(String(routerSettings.first_token_timeout_ms / 1000));
@@ -67,9 +71,18 @@ export function Overview({
       (priorities.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (priorities.get(right.id) ?? Number.MAX_SAFE_INTEGER)
       || left.name.localeCompare(right.name, "zh-CN"));
   }, [providers, routeGroup]);
+  const providerAliases = useMemo(() => {
+    const names = [...orderedProviders.map((provider) => provider.name), ...requests.map((request) => request.provider_name)];
+    const aliases = new Map<string, string>();
+    for (const name of names) {
+      if (name && !aliases.has(name)) aliases.set(name, `中转 ${aliases.size + 1}`);
+    }
+    return aliases;
+  }, [orderedProviders, requests]);
   const activeRouteNames = orderedProviders.filter((provider) => provider.enabled).map((provider) => provider.name);
-  const routeSummary = activeRouteNames.length
-    ? `${activeRouteNames.slice(0, 3).join(" → ")}${activeRouteNames.length > 3 ? ` +${activeRouteNames.length - 3}` : ""}`
+  const displayedRouteNames = activeRouteNames.map((name) => displayProviderName(name, providerNamesVisible, providerAliases));
+  const routeSummary = displayedRouteNames.length
+    ? `${displayedRouteNames.slice(0, 3).join(" → ")}${displayedRouteNames.length > 3 ? ` +${displayedRouteNames.length - 3}` : ""}`
     : "暂无可用中转";
   const totalTokens = summary.input_tokens + summary.output_tokens;
   const dailySeries = buildDailySeries(stats.daily);
@@ -85,21 +98,25 @@ export function Overview({
       requests: item.requests,
       tokens: item.tokens,
       estimatedCost: item.estimated_cost_usd,
+      avgTtftMs: item.avg_ttft_ms,
+      errors: item.errors,
       }));
-  const maxTrendTokens = Math.max(1, ...trendSeries.map((item) => item.tokens));
+  const maxTrendValue = Math.max(1, ...trendSeries.map((item) => trendMetricValue(item, trendMetric)));
   const chart = { width: 720, height: 196, left: 52, right: 14, top: 14, bottom: 31 };
   const plotWidth = chart.width - chart.left - chart.right;
   const plotHeight = chart.height - chart.top - chart.bottom;
   const trendPoints = trendSeries.map((item, index) => ({
     ...item,
     x: chart.left + (index / Math.max(1, trendSeries.length - 1)) * plotWidth,
-    y: chart.top + plotHeight - (item.tokens / maxTrendTokens) * plotHeight,
+    y: chart.top + plotHeight - (trendMetricValue(item, trendMetric) / maxTrendValue) * plotHeight,
   }));
   const linePath = trendPoints.map((point, index) => `${index ? "L" : "M"} ${point.x} ${point.y}`).join(" ");
   const areaPath = trendPoints.length
     ? `M ${trendPoints[0].x} ${chart.top + plotHeight} ${trendPoints.map((point) => `L ${point.x} ${point.y}`).join(" ")} L ${trendPoints.at(-1)?.x} ${chart.top + plotHeight} Z`
     : "";
   const hoveredPoint = hoveredTrend == null ? null : trendPoints[hoveredTrend];
+  const providerUsage = stats.provider_periods[summaryRange];
+  const providerRangeLabel = summaryRange === "today" ? "今日" : summaryRange === "yesterday" ? "昨日" : "近 7 日";
   const recentUsage = requests.slice(0, 20);
   const ttftBaselines = useMemo(() => buildTtftBaselines(requests), [requests]);
 
@@ -304,23 +321,30 @@ export function Overview({
         <section className="panel overview-trend-panel">
           <header className="section-heading trend-heading">
             <div><h2>用量趋势</h2></div>
-            <div className="trend-range-tabs">
-              <button type="button" className={trendRange === "today" ? "active" : ""} onClick={() => { setTrendRange("today"); setHoveredTrend(null); }}>今日</button>
-              <button type="button" className={trendRange === "yesterday" ? "active" : ""} onClick={() => { setTrendRange("yesterday"); setHoveredTrend(null); }}>昨日</button>
-              <button type="button" className={trendRange === "7d" ? "active" : ""} onClick={() => { setTrendRange("7d"); setHoveredTrend(null); }}>7 天</button>
+            <div className="trend-controls">
+              <div className="trend-metric-tabs" role="group" aria-label="趋势指标">
+                {TREND_METRICS.map(([metric, label]) => (
+                  <button key={metric} type="button" className={trendMetric === metric ? "active" : ""} onClick={() => { setTrendMetric(metric); setHoveredTrend(null); }}>{label}</button>
+                ))}
+              </div>
+              <div className="trend-range-tabs">
+                <button type="button" className={trendRange === "today" ? "active" : ""} onClick={() => { setTrendRange("today"); setHoveredTrend(null); }}>今日</button>
+                <button type="button" className={trendRange === "yesterday" ? "active" : ""} onClick={() => { setTrendRange("yesterday"); setHoveredTrend(null); }}>昨日</button>
+                <button type="button" className={trendRange === "7d" ? "active" : ""} onClick={() => { setTrendRange("7d"); setHoveredTrend(null); }}>7 天</button>
+              </div>
             </div>
           </header>
-          <div className="trend-plot" onMouseLeave={() => setHoveredTrend(null)}>
-            <svg viewBox={`0 0 ${chart.width} ${chart.height}`} role="img" aria-label={`${trendRange === "today" ? "今日" : trendRange === "yesterday" ? "昨日" : "7 天"} Token 趋势图`}>
+          <div className="trend-plot" data-metric={trendMetric} onMouseLeave={() => setHoveredTrend(null)}>
+            <svg viewBox={`0 0 ${chart.width} ${chart.height}`} role="img" aria-label={`${trendRange === "today" ? "今日" : trendRange === "yesterday" ? "昨日" : "7 天"}${trendMetricLabel(trendMetric)}趋势图`}>
               <defs>
                 <linearGradient id="overview-trend-fill" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#20a66a" stopOpacity="0.28" />
-                  <stop offset="100%" stopColor="#20a66a" stopOpacity="0.02" />
+                  <stop className="trend-gradient-start" offset="0%" />
+                  <stop className="trend-gradient-end" offset="100%" />
                 </linearGradient>
               </defs>
               {[1, 0.5, 0].map((ratio) => {
                 const y = chart.top + (1 - ratio) * plotHeight;
-                return <g key={ratio}><line className="trend-grid-line" x1={chart.left} x2={chart.width - chart.right} y1={y} y2={y} /><text className="trend-axis-label" x={chart.left - 9} y={y + 3} textAnchor="end">{formatTokens(Math.round(maxTrendTokens * ratio))}</text></g>;
+                return <g key={ratio}><line className="trend-grid-line" x1={chart.left} x2={chart.width - chart.right} y1={y} y2={y} /><text className="trend-axis-label" x={chart.left - 9} y={y + 3} textAnchor="end">{formatTrendMetric(maxTrendValue * ratio, trendMetric)}</text></g>;
               })}
               <path className="trend-area" d={areaPath} />
               <path className="trend-line" d={linePath} />
@@ -330,7 +354,7 @@ export function Overview({
                 return (
                   <g key={point.key}>
                     {showLabel && <text className="trend-axis-label" x={point.x} y={chart.height - 8} textAnchor="middle">{point.label}</text>}
-                    {point.tokens > 0 && <circle className="trend-data-point" cx={point.x} cy={point.y} r="3" />}
+                    {trendMetricValue(point, trendMetric) > 0 && <circle className="trend-data-point" cx={point.x} cy={point.y} r="3" />}
                     <rect className="trend-hit-area" x={point.x - hitWidth / 2} y={chart.top} width={hitWidth} height={plotHeight} onMouseEnter={() => setHoveredTrend(index)} />
                   </g>
                 );
@@ -345,7 +369,9 @@ export function Overview({
                 <strong>{formatTrendTimestamp(hoveredPoint.key, trendRange)}</strong>
                 <span><em>Token</em><b>{hoveredPoint.tokens.toLocaleString("zh-CN")}</b></span>
                 <span><em>请求数</em><b>{hoveredPoint.requests}</b></span>
+                <span><em>平均首字</em><b>{formatDuration(hoveredPoint.avgTtftMs)}</b></span>
                 <span><em>消耗金额</em><b>{formatUsd(hoveredPoint.estimatedCost)}</b></span>
+                <span><em>错误数</em><b>{hoveredPoint.errors}</b></span>
               </div>
             )}
           </div>
@@ -353,15 +379,42 @@ export function Overview({
 
         <div className="overview-side-stack">
           <section className="panel providers-panel">
-            <header className="section-heading"><div><h2>中转表现</h2><p>{providers.length ? `${healthy}/${providers.length} 个中转正常` : "等待添加中转"}</p></div></header>
+            <header className="section-heading">
+              <div><h2>中转表现</h2><p>{providers.length ? `${providerRangeLabel} · ${healthy}/${providers.length} 个中转正常` : "等待添加中转"}</p></div>
+              <label className="switch provider-name-switch" title={providerNamesVisible ? "关闭后脱敏中转名称" : "开启后显示中转名称"}>
+                <input
+                  type="checkbox"
+                  checked={providerNamesVisible}
+                  aria-label="显示中转名称"
+                  onChange={(event) => {
+                    const visible = event.currentTarget.checked;
+                    setProviderNamesVisible(visible);
+                    saveProviderNamesVisible(visible);
+                  }}
+                />
+                <span />
+              </label>
+            </header>
             {providers.length === 0 ? <EmptyState title="尚未配置中转" description="添加中转后即可开始路由。" action={<button className="button button-primary" onClick={() => onNavigate("providers")}>添加中转</button>} /> : (
               <div className="provider-health-list">
                 {orderedProviders.map((provider, index) => {
-                  const usage = stats.by_provider.find((item) => item.name === provider.name);
+                  const usage = providerUsage.find((item) => item.name === provider.name);
+                  const measured = usage ? usage.completed + usage.errors : 0;
+                  const errorRate = measured && usage ? Math.round((usage.errors / measured) * 100) : 0;
                   return (
                     <button type="button" key={provider.id} className="provider-health-row" onClick={() => onNavigate("providers")}>
                       <span className="provider-route-rank">{index + 1}</span>
-                      <span className="provider-health-name"><strong>{provider.name}</strong><em>{usage ? `${usage.upstream_calls} 次上游 · 平均 ${formatDuration(usage.avg_duration_ms)} · ${formatUsd(usage.estimated_cost_usd)}` : "暂无使用记录"}</em></span>
+                      <span className="provider-health-name">
+                        <strong>{displayProviderName(provider.name, providerNamesVisible, providerAliases)}</strong>
+                        {usage ? (
+                          <em className="provider-health-metrics">
+                            <span>请求 <b>{usage.upstream_calls}</b></span>
+                            <span>平均首字 <b>{formatDuration(usage.avg_ttft_ms)}</b></span>
+                            <span>错误率 <b>{errorRate}%</b></span>
+                            <span>消费金额 <b>{formatUsd(usage.estimated_cost_usd)}</b></span>
+                          </em>
+                        ) : <em>暂无使用记录</em>}
+                      </span>
                       <ProviderStatus provider={provider} />
                     </button>
                   );
@@ -410,7 +463,7 @@ export function Overview({
                   <td>
                     <button className="usage-record-link" type="button" onClick={() => onOpenRequest(request)}>
                       <strong>{request.upstream_model || request.requested_model || "正在识别模型"}</strong>
-                      <small>{request.provider_name || "未选择中转"}</small>
+                      <small>{displayProviderName(request.provider_name, providerNamesVisible, providerAliases)}</small>
                     </button>
                   </td>
                   <td><span className="token-triplet"><strong>{formatTokens(request.input_tokens)}</strong><i>/</i><strong>{formatTokens(request.cached_tokens)}</strong><i>/</i><strong>{formatTokens(request.output_tokens)}</strong></span></td>
@@ -428,7 +481,7 @@ export function Overview({
       </section>
 
       <section className="quick-facts">
-        <div><Check size={17} /><span>调用顺序</span><strong className="route-summary" title={activeRouteNames.join(" → ")}>{routeSummary}</strong></div>
+        <div><Check size={17} /><span>调用顺序</span><strong className="route-summary" title={displayedRouteNames.join(" → ")}>{routeSummary}</strong></div>
         <div><Route size={17} /><span>故障转移</span><strong>{stats.summary.failovers || 0} 次</strong></div>
         <div><Clock3 size={17} /><span>服务启动</span><strong>{formatTime(service.started_at)}</strong></div>
       </section>
@@ -464,6 +517,27 @@ function networkTimingTitle(request: RequestRecord) {
   return `${connection} · 上传 ${formatDuration(request.request_upload_ms)} · 上游等待 ${formatDuration(request.upstream_wait_ms)}`;
 }
 
+function readProviderNamesVisible() {
+  try {
+    return localStorage.getItem(PROVIDER_NAMES_VISIBLE_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
+function saveProviderNamesVisible(visible: boolean) {
+  try {
+    localStorage.setItem(PROVIDER_NAMES_VISIBLE_KEY, visible ? "1" : "0");
+  } catch {
+    // The privacy switch still works for the current session when storage is unavailable.
+  }
+}
+
+function displayProviderName(name: string | null | undefined, visible: boolean, aliases: Map<string, string>) {
+  if (!name) return "未选择中转";
+  return visible ? name : aliases.get(name) ?? "其他中转";
+}
+
 function fallbackCopy(value: string) {
   const input = document.createElement("textarea");
   input.value = value;
@@ -483,11 +557,27 @@ function buildDailySeries(daily: Stats["daily"]): Stats["daily"] {
     date.setUTCHours(0, 0, 0, 0);
     date.setUTCDate(date.getUTCDate() - (6 - index));
     const day = date.toISOString().slice(0, 10);
-    return byDay.get(day) ?? { day, requests: 0, completed: 0, tokens: 0, estimated_cost_usd: 0 };
+    return byDay.get(day) ?? { day, requests: 0, completed: 0, errors: 0, avg_ttft_ms: null, tokens: 0, estimated_cost_usd: 0 };
   });
 }
 
-type TrendPoint = { key: string; label: string; requests: number; tokens: number; estimatedCost: number };
+type TrendMetric = "tokens" | "ttft" | "cost" | "errors";
+type TrendPoint = {
+  key: string;
+  label: string;
+  requests: number;
+  tokens: number;
+  estimatedCost: number;
+  avgTtftMs: number | null;
+  errors: number;
+};
+
+const TREND_METRICS: Array<[TrendMetric, string]> = [
+  ["tokens", "Token"],
+  ["ttft", "平均首字"],
+  ["cost", "消费金额"],
+  ["errors", "错误数"],
+];
 
 function buildCalendarHourlySeries(hourly: Stats["hourly"], daysAgo: number): TrendPoint[] {
   const byHour = new Map(hourly.map((item) => [item.hour, item]));
@@ -503,8 +593,28 @@ function buildCalendarHourlySeries(hourly: Stats["hourly"], daysAgo: number): Tr
       requests: item?.requests ?? 0,
       tokens: item?.tokens ?? 0,
       estimatedCost: item?.estimated_cost_usd ?? 0,
+      avgTtftMs: item?.avg_ttft_ms ?? null,
+      errors: item?.errors ?? 0,
     };
   });
+}
+
+function trendMetricValue(point: TrendPoint, metric: TrendMetric) {
+  if (metric === "ttft") return point.avgTtftMs ?? 0;
+  if (metric === "cost") return point.estimatedCost;
+  if (metric === "errors") return point.errors;
+  return point.tokens;
+}
+
+function trendMetricLabel(metric: TrendMetric) {
+  return TREND_METRICS.find(([value]) => value === metric)?.[1] ?? "Token";
+}
+
+function formatTrendMetric(value: number, metric: TrendMetric) {
+  if (metric === "ttft") return formatDuration(Math.round(value));
+  if (metric === "cost") return formatUsd(value);
+  if (metric === "errors") return String(Math.round(value));
+  return formatTokens(Math.round(value));
 }
 
 function formatTrendTimestamp(key: string, range: "today" | "yesterday" | "7d") {

@@ -200,6 +200,8 @@ export function createDatabase(dataDir) {
     CREATE INDEX IF NOT EXISTS idx_requests_ttft_baseline
       ON requests(final_provider_id, requested_model, started_at DESC);
     CREATE INDEX IF NOT EXISTS idx_attempts_request ON request_attempts(request_id, sequence);
+    CREATE INDEX IF NOT EXISTS idx_attempts_started_at_provider
+      ON request_attempts(started_at DESC, provider_id);
   `);
 
   ensureColumn(db, "providers", "test_model", "TEXT NOT NULL DEFAULT 'gpt-5.6-terra'");
@@ -978,22 +980,17 @@ export function getStats(db, days = 7) {
     yesterday: requestSummary(db, yesterdayStart.toISOString(), todayStart.toISOString()),
     seven_days: safeDays === 7 ? summary : requestSummary(db, sevenDaysSince),
   };
-  const byProvider = db.prepare(`
-    SELECT p.name AS name, COUNT(DISTINCT a.request_id) AS requests,
-      COUNT(*) AS upstream_calls,
-      SUM(CASE WHEN a.status = 'completed' THEN 1 ELSE 0 END) AS completed,
-      SUM(CASE WHEN a.error_category = 'client_disconnected' THEN 1 ELSE 0 END) AS client_disconnected,
-      SUM(CASE WHEN a.error_category = 'user_cancelled' THEN 1 ELSE 0 END) AS cancelled,
-      SUM(CASE WHEN a.error_category = 'race_lost' OR a.termination_reason IN ('relay_cancelled', 'race_lost') THEN 1 ELSE 0 END) AS relay_cancelled,
-      ROUND(AVG(a.duration_ms)) AS avg_duration_ms,
-      COALESCE(SUM(a.input_tokens + a.output_tokens), 0) AS tokens,
-      COALESCE(SUM(a.total_cost_usd), 0) AS estimated_cost_usd
-    FROM request_attempts a JOIN providers p ON p.id = a.provider_id
-    WHERE a.started_at >= ? GROUP BY a.provider_id ORDER BY upstream_calls DESC
-  `).all(since);
+  const byProvider = providerSummary(db, since);
+  const providerPeriods = {
+    today: providerSummary(db, todayStart.toISOString()),
+    yesterday: providerSummary(db, yesterdayStart.toISOString(), todayStart.toISOString()),
+    seven_days: safeDays === 7 ? byProvider : providerSummary(db, sevenDaysSince),
+  };
   const daily = db.prepare(`
     SELECT substr(started_at, 1, 10) AS day, COUNT(*) AS requests,
       SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
+      SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS errors,
+      ROUND(AVG(CASE WHEN ttft_ms IS NOT NULL THEN ttft_ms END)) AS avg_ttft_ms,
       COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens,
       COALESCE(SUM(total_cost_usd), 0) AS estimated_cost_usd
     FROM requests WHERE started_at >= ? GROUP BY day ORDER BY day ASC
@@ -1001,6 +998,8 @@ export function getStats(db, days = 7) {
   const hourly = db.prepare(`
     SELECT substr(started_at, 1, 13) AS hour, COUNT(*) AS requests,
       SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
+      SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS errors,
+      ROUND(AVG(CASE WHEN ttft_ms IS NOT NULL THEN ttft_ms END)) AS avg_ttft_ms,
       COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens,
       COALESCE(SUM(total_cost_usd), 0) AS estimated_cost_usd
     FROM requests WHERE started_at >= ? GROUP BY hour ORDER BY hour ASC
@@ -1009,7 +1008,39 @@ export function getStats(db, days = 7) {
     today: hourlySummary(db, todayStart.toISOString()),
     yesterday: hourlySummary(db, yesterdayStart.toISOString(), todayStart.toISOString()),
   };
-  return { days: safeDays, summary, periods, by_provider: byProvider, daily, hourly, hourly_periods: hourlyPeriods };
+  return {
+    days: safeDays,
+    summary,
+    periods,
+    by_provider: byProvider,
+    provider_periods: providerPeriods,
+    daily,
+    hourly,
+    hourly_periods: hourlyPeriods,
+  };
+}
+
+function providerSummary(db, since, until = null) {
+  const range = until ? "a.started_at >= ? AND a.started_at < ?" : "a.started_at >= ?";
+  return db.prepare(`
+    SELECT p.name AS name, COUNT(DISTINCT a.request_id) AS requests,
+      COUNT(*) AS upstream_calls,
+      SUM(CASE WHEN a.status = 'completed' THEN 1 ELSE 0 END) AS completed,
+      SUM(CASE WHEN a.status = 'failed'
+        AND COALESCE(a.error_category, '') NOT IN ('client_disconnected', 'user_cancelled', 'race_lost')
+        AND COALESCE(a.termination_reason, '') NOT IN ('relay_cancelled', 'race_lost')
+        THEN 1 ELSE 0 END) AS errors,
+      SUM(CASE WHEN a.error_category = 'client_disconnected' THEN 1 ELSE 0 END) AS client_disconnected,
+      SUM(CASE WHEN a.error_category = 'user_cancelled' THEN 1 ELSE 0 END) AS cancelled,
+      SUM(CASE WHEN a.error_category = 'race_lost' OR a.termination_reason IN ('relay_cancelled', 'race_lost') THEN 1 ELSE 0 END) AS relay_cancelled,
+      ROUND(AVG(a.duration_ms)) AS avg_duration_ms,
+      ROUND(AVG(CASE WHEN a.first_byte_at IS NOT NULL
+        THEN (julianday(a.first_byte_at) - julianday(a.started_at)) * 86400000 END)) AS avg_ttft_ms,
+      COALESCE(SUM(a.input_tokens + a.output_tokens), 0) AS tokens,
+      COALESCE(SUM(a.total_cost_usd), 0) AS estimated_cost_usd
+    FROM request_attempts a JOIN providers p ON p.id = a.provider_id
+    WHERE ${range} GROUP BY a.provider_id ORDER BY upstream_calls DESC
+  `).all(...(until ? [since, until] : [since]));
 }
 
 function hourlySummary(db, since, until = null) {
@@ -1017,6 +1048,8 @@ function hourlySummary(db, since, until = null) {
   return db.prepare(`
     SELECT substr(started_at, 1, 13) AS hour, COUNT(*) AS requests,
       COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) AS completed,
+      COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) AS errors,
+      ROUND(AVG(CASE WHEN ttft_ms IS NOT NULL THEN ttft_ms END)) AS avg_ttft_ms,
       COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens,
       COALESCE(SUM(total_cost_usd), 0) AS estimated_cost_usd
     FROM requests WHERE ${range} GROUP BY hour ORDER BY hour ASC

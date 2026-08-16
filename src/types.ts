@@ -234,6 +234,23 @@ export type StatsHourlyPoint = {
   hour: string;
   requests: number;
   completed: number;
+  errors: number;
+  avg_ttft_ms: number | null;
+  tokens: number;
+  estimated_cost_usd: number;
+};
+
+export type ProviderStats = {
+  name: string;
+  requests: number;
+  upstream_calls: number;
+  completed: number;
+  errors: number;
+  client_disconnected: number;
+  cancelled: number;
+  relay_cancelled: number;
+  avg_duration_ms: number | null;
+  avg_ttft_ms: number | null;
   tokens: number;
   estimated_cost_usd: number;
 };
@@ -246,22 +263,18 @@ export type Stats = {
     yesterday: StatsSummary;
     seven_days: StatsSummary;
   };
-  by_provider: Array<{
-    name: string;
-    requests: number;
-    upstream_calls: number;
-    completed: number;
-    client_disconnected: number;
-    cancelled: number;
-    relay_cancelled: number;
-    avg_duration_ms: number | null;
-    tokens: number;
-    estimated_cost_usd: number;
-  }>;
+  by_provider: ProviderStats[];
+  provider_periods: {
+    today: ProviderStats[];
+    yesterday: ProviderStats[];
+    seven_days: ProviderStats[];
+  };
   daily: Array<{
     day: string;
     requests: number;
     completed: number;
+    errors: number;
+    avg_ttft_ms: number | null;
     tokens: number;
     estimated_cost_usd: number;
   }>;
