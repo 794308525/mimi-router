@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "咪咪 Router",
-  "version": "0.2.13",
+  "version": "0.2.14",
   "identifier": "com.chen.codex-router",
   "build": {
     "frontendDist": "../dist",
@@ -30,7 +30,8 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["dmg"],
+    "targets": ["app", "dmg"],
+    "createUpdaterArtifacts": true,
     "resources": {
       "../server/": "server/",
       "runtime/": "runtime/"
@@ -44,6 +45,17 @@
     ],
     "macOS": {
       "minimumSystemVersion": "12.0"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDcyNTI5OUUzQkY0NkJCNjYKUldSbXUwYS80NWxTY2dTZDY4OUdHdzkzRXdwa0doLzRreVRDMDRXUnlPUzJ4Wkp1SjAvMFJnOEsK",
+      "endpoints": [
+        "https://github.com/794308525/mimi-router/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }

@@ -1,6 +1,8 @@
 node_modules/
 dist/
 artifacts/
+release-output/
+release-assets/
 data/
 src-tauri/runtime/
 src-tauri/target/

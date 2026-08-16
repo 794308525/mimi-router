@@ -184,6 +184,8 @@ fn stop_gateway(app: &AppHandle) {
 fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(GatewayProcess::default())
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "打开咪咪 Router", true, None::<&str>)?;

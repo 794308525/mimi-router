@@ -1,6 +1,26 @@
 {
-  "currentVersion": "0.2.13",
+  "currentVersion": "0.2.14",
   "releases": [
+    {
+      "version": "0.2.14",
+      "date": "2026-08-16",
+      "notes": {
+        "zh-CN": [
+          "新增桌面端启动更新检测和关于页手动检查，发现新版本后可查看说明、跟踪下载进度并重启安装。",
+          "接入 Tauri 官方更新签名校验，应用只会安装由项目私钥签名的 macOS 或 Windows 更新包。",
+          "新增需手动确认的 GitHub Release 工作流，并行构建 macOS Apple Silicon、macOS Intel 和 Windows x64 安装包。",
+          "三个平台全部成功后自动创建双语 GitHub Release、在线更新清单、签名文件和 SHA-256 校验文件。",
+          "完善 README 项目说明、作者联系方式和发版操作文档。"
+        ],
+        "en": [
+          "Added startup update checks and manual checks on the About page, with release details, download progress, and restart-to-install support.",
+          "Integrated official Tauri update signature verification so the app only installs macOS or Windows packages signed by the project key.",
+          "Added a manually confirmed GitHub Release workflow that builds macOS Apple Silicon, macOS Intel, and Windows x64 packages in parallel.",
+          "A bilingual GitHub Release, updater manifest, signatures, and SHA-256 checksums are now created only after all three platforms build successfully.",
+          "Expanded the README project overview, author contact details, and release documentation."
+        ]
+      }
+    },
     {
       "version": "0.2.13",
       "date": "2026-08-16",

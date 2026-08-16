@@ -2,6 +2,14 @@
 
 This project follows semantic versioning. Every feature update must keep the application version and both language variants of the release notes in sync.
 
+## 0.2.14 - 2026-08-16
+
+- Added startup update checks and manual checks on the About page, with release details, download progress, and restart-to-install support.
+- Integrated official Tauri update signature verification so the app only installs macOS or Windows packages signed by the project key.
+- Added a manually confirmed GitHub Release workflow that builds macOS Apple Silicon, macOS Intel, and Windows x64 packages in parallel.
+- A bilingual GitHub Release, updater manifest, signatures, and SHA-256 checksums are now created only after all three platforms build successfully.
+- Expanded the README project overview, author contact details, and release documentation.
+
 ## 0.2.13 - 2026-08-16
 
 - Added normal, circuit-open, observing, and disabled provider counts to the dashboard while hiding provider names entirely in privacy mode.

@@ -1,0 +1,197 @@
+name: Release Desktop Apps
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "要发布的版本号，例如 0.2.14（必须与项目版本一致）"
+        required: true
+        type: string
+      confirmation:
+        description: "输入 RELEASE 确认创建正式版本"
+        required: true
+        type: string
+      prerelease:
+        description: "标记为预发布版本"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate version and release notes
+        id: release
+        shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          VERSION="${REQUESTED_VERSION#v}"
+          if [[ "$CONFIRMATION" != "RELEASE" ]]; then
+            echo "发版确认文字必须为 RELEASE" >&2
+            exit 1
+          fi
+          npm run check:version
+          node -e 'const p=require("./package.json"); if (p.version !== process.argv[1]) throw new Error(`项目版本 ${p.version} 与发版版本 ${process.argv[1]} 不一致`)' "$VERSION"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null 2>&1; then
+            echo "标签 v$VERSION 已存在" >&2
+            exit 1
+          fi
+          node scripts/prepare-release.mjs "$VERSION" release-body.md
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Upload release metadata
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-metadata
+          path: release-body.md
+          if-no-files-found: error
+          retention-days: 7
+
+  build:
+    name: Build ${{ matrix.label }}
+    needs: validate
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS Apple Silicon
+            os: macos-15
+            target: aarch64-apple-darwin
+            bundles: app,dmg
+            platform: macos
+            arch: arm64
+          - label: macOS Intel
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+            bundles: app,dmg
+            platform: macos
+            arch: x64
+          - label: Windows x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+            platform: windows
+            arch: x64
+    runs-on: ${{ matrix.os }}
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Require updater signing key
+        shell: bash
+        run: |
+          if [[ -z "$TAURI_SIGNING_PRIVATE_KEY" ]]; then
+            echo "缺少 GitHub Secret: TAURI_SIGNING_PRIVATE_KEY" >&2
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build signed desktop bundles
+        run: npm run desktop:build -- --target "${{ matrix.target }}" --bundles "${{ matrix.bundles }}"
+
+      - name: Collect release artifacts
+        run: node scripts/collect-release-artifacts.mjs "${{ matrix.platform }}" "${{ matrix.arch }}" "${{ needs.validate.outputs.version }}" "${{ matrix.target }}"
+
+      - name: Upload signed bundles
+        uses: actions/upload-artifact@v7
+        with:
+          name: bundle-${{ matrix.platform }}-${{ matrix.arch }}
+          path: release-output/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Create GitHub Release
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Download release bundles
+        uses: actions/download-artifact@v8
+        with:
+          pattern: bundle-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Download release metadata
+        uses: actions/download-artifact@v8
+        with:
+          name: release-metadata
+          path: release-metadata
+
+      - name: Generate updater manifest and checksums
+        run: node scripts/create-updater-manifest.mjs "${{ needs.validate.outputs.version }}" release-assets "${{ github.repository }}"
+
+      - name: Create release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          EXTRA_ARGS=(--latest)
+          if [[ "$PRERELEASE" == "true" ]]; then
+            EXTRA_ARGS=(--prerelease)
+          fi
+          gh release create "v$VERSION" release-assets/* \
+            --target "$GITHUB_SHA" \
+            --title "咪咪 Router v$VERSION" \
+            --notes-file release-metadata/release-body.md \
+            "${EXTRA_ARGS[@]}"

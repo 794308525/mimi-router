@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   Activity,
   Cable,
+  Download,
   Info,
   LayoutDashboard,
   Menu,
@@ -19,6 +20,7 @@ import { ProvidersPage } from "./pages/Providers";
 import { RequestsPage } from "./pages/Requests";
 import { SettingsPage } from "./pages/Settings";
 import { AboutPage } from "./pages/About";
+import { useAppUpdater } from "./updater";
 
 type PageId = "overview" | "providers" | "requests" | "settings" | "about";
 
@@ -38,6 +40,7 @@ export default function App() {
   const [notice, setNotice] = useState<Notice>(null);
   const [selectedRequest, setSelectedRequest] = useState<RequestRecord | null>(null);
   const [mobileNav, setMobileNav] = useState(false);
+  const updater = useAppUpdater();
 
   const load = useCallback(async () => {
     try {
@@ -148,7 +151,7 @@ export default function App() {
             const Icon = item.icon;
             return (
               <button key={item.id} type="button" className={page === item.id ? "active" : ""} onClick={() => navigate(item.id)}>
-                <Icon size={18} /><span>{item.label}</span>
+                <Icon size={18} /><span>{item.label}</span>{item.id === "about" && updater.status === "available" && <em>新</em>}
               </button>
             );
           })}
@@ -167,11 +170,18 @@ export default function App() {
           <span className="mobile-live"><i /></span>
         </div>
         <NoticeBar notice={notice} onClose={() => setNotice(null)} />
+        {updater.status === "available" && (
+          <section className="app-update-banner" aria-label="发现软件更新">
+            <Download size={17} />
+            <span><strong>发现新版本 v{updater.version}</strong><small>可在“关于”中查看更新内容并在线安装</small></span>
+            <button className="button button-primary button-small" type="button" onClick={() => navigate("about")}>查看更新</button>
+          </section>
+        )}
         {page === "overview" && <Overview service={data.service} providers={data.providers} routeGroup={data.routes.groups[0] ?? null} requests={data.requests} stats={data.stats} routerSettings={data.router_settings} onNavigate={navigate} onOpenRequest={openRequest} setNotice={setNotice} />}
         {page === "providers" && <ProvidersPage providers={data.providers} groups={data.routes.groups} stats={data.stats} onRefresh={load} setNotice={setNotice} />}
         {page === "requests" && <RequestsPage requests={data.requests} providers={data.providers} onRefresh={load} setNotice={setNotice} initialDetail={selectedRequest} onDetailClosed={() => setSelectedRequest(null)} />}
         {page === "settings" && <SettingsPage codex={data.codex} pricing={data.pricing} setNotice={setNotice} />}
-        {page === "about" && <AboutPage />}
+        {page === "about" && <AboutPage updater={updater} />}
       </main>
     </div>
   );
