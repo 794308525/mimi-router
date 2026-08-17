@@ -481,6 +481,9 @@ test("retries capacity failures on the same provider before failing over", async
 
 for (const scenario of [
   { name: "HTTP 429", path: "rate-limit", category: "rate_limit" },
+  { name: "HTTP 524", path: "gateway-timeout", category: "server_error" },
+  { name: "an HTML gateway HTTP 400", path: "html-gateway-bad-request", category: "server_error" },
+  { name: "an HTTP 200 semantic 524 failure", path: "semantic-gateway-timeout", category: "server_error" },
   { name: "an HTTP 200 semantic 429 failure", path: "semantic-rate-limit", category: "rate_limit" },
   { name: "an HTTP 200 top-level rate-limit error", path: "top-level-rate-limit", category: "rate_limit" },
   { name: "an HTTP 200 server error", path: "semantic-server-error", category: "server_error" },
@@ -532,6 +535,41 @@ for (const scenario of [
     }
   });
 }
+
+test("does not retry an ordinary JSON HTTP 400 response", async () => {
+  const invalid = await post("/api/providers", {
+    name: "Invalid request upstream",
+    base_url: `http://127.0.0.1:${mockPort}/json-bad-request/v1`,
+  });
+  const routes = await get("/api/routes");
+  const group = routes.groups[0];
+  const originalMembers = group.members;
+  await put(`/api/route-groups/${group.id}`, {
+    ...group,
+    max_attempts: 2,
+    provider_retry_attempts: 2,
+    members: [{ provider_id: invalid.id, priority: 1, weight: 100, enabled: true }],
+  });
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello", stream: true }),
+    });
+    assert.equal(response.status, 400);
+    assert.match(await response.text(), /Invalid request parameter/);
+
+    const failed = (await get("/api/requests?limit=10"))[0];
+    const detail = await get(`/api/requests/${failed.id}`);
+    assert.equal(detail.status, "failed");
+    assert.equal(detail.attempt_count, 1);
+    assert.equal(detail.attempts[0].error_category, "request_error");
+  } finally {
+    await put(`/api/route-groups/${group.id}`, { ...group, members: originalMembers });
+    await send("DELETE", `/api/providers/${invalid.id}`, {});
+  }
+});
 
 test("does not start a second stream when a retryable semantic failure arrives after output", async () => {
   const lateFailure = await post("/api/providers", {

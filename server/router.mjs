@@ -29,6 +29,21 @@ const RETRYABLE_SEMANTIC_CATEGORIES = new Set([
   "server_error",
   "vector_store_timeout",
 ]);
+const SAME_PROVIDER_RETRY_HTTP_STATUSES = new Set([
+  408,
+  425,
+  502,
+  503,
+  504,
+  520,
+  521,
+  522,
+  523,
+  524,
+  525,
+  526,
+  527,
+]);
 class UpstreamSemanticFailureError extends Error {
   constructor(status, message, category = "upstream_semantic_failure", code = "") {
     super(message);
@@ -395,13 +410,23 @@ export class RouterEngine {
         continue;
       }
 
-      const classification = classifyStatus(upstream.status);
+      if (!bufferedErrorResponse && upstream.status === 400
+        && upstream.headers.get("content-type")?.toLowerCase().includes("text/html")) {
+        bufferedErrorResponse = Buffer.from(await upstream.arrayBuffer());
+      }
+      const responseText = bufferedErrorResponse?.toString("utf8") ?? "";
+      const transientHtmlGatewayFailure = isTransientHtmlGatewayResponse(upstream, responseText);
+      const classification = transientHtmlGatewayFailure
+        ? { auth: false, retryable: true, category: "server_error" }
+        : classifyStatus(upstream.status);
       if (classification.retryable || classification.auth) {
-        const responseText = bufferedErrorResponse?.toString("utf8") ?? await upstream.text().catch(() => "");
+        const errorText = responseText || await upstream.text().catch(() => "");
         clearTimeout(requestTimer);
         this.releaseProvider(provider.id, probe);
-        const message = extractUpstreamError(responseText, upstream.status);
-        const retryCategory = sameProviderRetryCategory(upstream.status, message);
+        const message = extractUpstreamError(errorText, upstream.status);
+        const retryCategory = transientHtmlGatewayFailure
+          ? "server_error"
+          : sameProviderRetryCategory(upstream.status, message);
         const category = retryCategory || classification.category;
         this.finishAttempt(attemptId, attemptMono, "failed", upstream.status, category, message);
         this.publishAttempt(requestId, attemptId);
@@ -2173,6 +2198,9 @@ function parseHeaders(value) {
 function classifyStatus(status) {
   if (status === 401 || status === 403) return { auth: true, retryable: false, category: "auth" };
   if (status === 429) return { auth: false, retryable: true, category: "rate_limit" };
+  if (SAME_PROVIDER_RETRY_HTTP_STATUSES.has(status)) {
+    return { auth: false, retryable: true, category: "server_error" };
+  }
   if (status >= 500) return { auth: false, retryable: true, category: "upstream_5xx" };
   return { auth: false, retryable: false, category: "request_error" };
 }
@@ -2251,11 +2279,24 @@ function isRateLimitError(message) {
   return /(?:\b429\b|too\s+many\s+requests|rate[\s_-]*limit(?:ed)?|exceeded\s+(?:the\s+)?retry\s+limit)/i.test(String(message || ""));
 }
 
+function isTransientGatewayError(message) {
+  return /(?:\b(?:408|425|502|503|504|52[0-7])\b|bad\s+gateway|service\s+unavailable|gateway\s+time(?:d?\s*out|out)|a\s+timeout\s+occurred|connection\s+timed\s+out|web\s+server\s+is\s+down|origin\s+is\s+unreachable|ssl\s+handshake\s+failed)/i.test(String(message || ""));
+}
+
+function isTransientHtmlGatewayResponse(response, body) {
+  if (response.status !== 400) return false;
+  const contentType = response.headers.get("content-type") || "";
+  if (!contentType.toLowerCase().includes("text/html")) return false;
+  const gatewayEvidence = `${response.headers.get("server") || ""}\n${body}`;
+  return /(?:cloudflare|cdn-cgi|cf-error-details|nginx|openresty)/i.test(gatewayEvidence);
+}
+
 function sameProviderRetryCategory(status, message, code = "") {
   if (status === 429 || code === "rate_limit_exceeded" || isRateLimitError(message)) return "rate_limit";
   if (code === "server_error") return "server_error";
   if (code === "vector_store_timeout") return "vector_store_timeout";
   if (isCapacityError(message)) return "capacity";
+  if (SAME_PROVIDER_RETRY_HTTP_STATUSES.has(status) || isTransientGatewayError(message)) return "server_error";
   return null;
 }
 

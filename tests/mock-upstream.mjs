@@ -109,6 +109,32 @@ const server = createServer((req, res) => {
       res.end(JSON.stringify({ error: { message: "exceeded retry limit, last status: 429 Too Many Requests" } }));
       return;
     }
+    if (req.url?.includes("/gateway-timeout/")) {
+      res.writeHead(524, { "content-type": "text/html" });
+      res.end("<!DOCTYPE html><title>524: A timeout occurred</title>");
+      return;
+    }
+    if (req.url?.includes("/html-gateway-bad-request/")) {
+      res.writeHead(400, { "content-type": "text/html", server: "cloudflare" });
+      res.end("<!DOCTYPE html><title>400 Bad Request</title><div id=\"cf-error-details\">Cloudflare challenge</div><hr><center>nginx</center>");
+      return;
+    }
+    if (req.url?.includes("/json-bad-request/")) {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "Invalid request parameter" } }));
+      return;
+    }
+    if (req.url?.includes("/semantic-gateway-timeout/")) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(`event: response.failed\ndata: ${JSON.stringify({
+        type: "response.failed",
+        response: {
+          status: "failed",
+          error: { message: "unexpected status 524 <unknown status code>: A timeout occurred" },
+        },
+      })}\n\n`);
+      return;
+    }
     if (req.url?.includes("/semantic-rate-limit/")) {
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.write(`event: response.created\ndata: ${JSON.stringify({ type: "response.created", response: { id: "resp_rate_limit" } })}\n\n`);

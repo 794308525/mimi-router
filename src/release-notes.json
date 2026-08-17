@@ -1,6 +1,24 @@
 {
-  "currentVersion": "0.2.16",
+  "currentVersion": "0.2.17",
   "releases": [
+    {
+      "version": "0.2.17",
+      "date": "2026-08-17",
+      "notes": {
+        "zh-CN": [
+          "同渠道自动重试新增 408、425、502、503、504 和 Cloudflare 520-527 临时故障状态。",
+          "明确带有 nginx、Cloudflare 或 OpenResty 网关特征的 HTML 400 会自动重试，普通 JSON 请求错误不受影响。",
+          "支持识别 HTTP 200 响应流中包装的 524、网关超时和临时连接故障，再按配置重试并故障转移。",
+          "501 等明确表示接口未实现的错误不会无效重试，Chat 接口不支持时仍使用 Responses 兼容转换。"
+        ],
+        "en": [
+          "Added same-provider retries for transient HTTP 408, 425, 502, 503, 504, and Cloudflare 520-527 failures.",
+          "HTML 400 responses with clear nginx, Cloudflare, or OpenResty gateway signatures are retried without affecting ordinary JSON request errors.",
+          "Wrapped 524, gateway timeout, and transient connection failures inside HTTP 200 streams are now detected before configured retries and failover.",
+          "Explicitly unsupported errors such as 501 are not retried, while unsupported Chat endpoints continue to use the Responses compatibility bridge."
+        ]
+      }
+    },
     {
       "version": "0.2.16",
       "date": "2026-08-17",

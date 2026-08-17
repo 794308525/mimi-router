@@ -2,6 +2,13 @@
 
 This project follows semantic versioning. Every feature update must keep the application version and both language variants of the release notes in sync.
 
+## 0.2.17 - 2026-08-17
+
+- Added same-provider retries for transient HTTP `408`, `425`, `502`, `503`, `504`, and Cloudflare `520-527` failures.
+- HTML `400` responses with clear nginx, Cloudflare, or OpenResty gateway signatures are retried without affecting ordinary JSON request errors.
+- Wrapped `524`, gateway timeout, and transient connection failures inside HTTP `200` streams are now detected before configured retries and failover.
+- Explicitly unsupported errors such as `501` are not retried, while unsupported Chat endpoints continue to use the Responses compatibility bridge.
+
 ## 0.2.16 - 2026-08-17
 
 - Added an OpenAI Chat Completions endpoint with native streaming and non-streaming Chat forwarding.
