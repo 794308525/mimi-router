@@ -175,7 +175,7 @@ jobs:
           name: release-metadata
           path: release-metadata
 
-      - name: Generate updater manifest and checksums
+      - name: Generate updater manifest and remove temporary signatures
         run: node scripts/create-updater-manifest.mjs "${{ needs.validate.outputs.version }}" release-assets "${{ github.repository }}"
 
       - name: Create release

@@ -22,8 +22,9 @@ export function createDatabase(dataDir) {
       has_secret INTEGER NOT NULL DEFAULT 0,
       headers_json TEXT NOT NULL DEFAULT '{}',
       connect_timeout_ms INTEGER NOT NULL DEFAULT 10000,
-      request_timeout_ms INTEGER NOT NULL DEFAULT 300000,
-      stream_idle_timeout_ms INTEGER NOT NULL DEFAULT 300000,
+      request_timeout_ms INTEGER NOT NULL DEFAULT 900000,
+      stream_idle_timeout_ms INTEGER NOT NULL DEFAULT 20000,
+      stream_progress_timeout_ms INTEGER NOT NULL DEFAULT 40000,
       max_concurrency INTEGER NOT NULL DEFAULT 8,
       enabled INTEGER NOT NULL DEFAULT 1,
       health_status TEXT NOT NULL DEFAULT 'unknown',
@@ -95,6 +96,14 @@ export function createDatabase(dataDir) {
       ended_at TEXT,
       duration_ms INTEGER,
       ttft_ms INTEGER,
+      max_stream_chunk_idle_ms INTEGER,
+      max_meaningful_output_idle_ms INTEGER,
+      final_output_idle_ms INTEGER,
+      stream_chunk_count INTEGER,
+      meaningful_output_event_count INTEGER,
+      first_token_timeout_ms INTEGER,
+      race_triggered INTEGER NOT NULL DEFAULT 0,
+      race_winner_sequence INTEGER,
       status TEXT NOT NULL,
       requested_model TEXT NOT NULL DEFAULT '',
       upstream_model TEXT NOT NULL DEFAULT '',
@@ -223,11 +232,20 @@ export function createDatabase(dataDir) {
   ensureColumn(db, "providers", "chat_support_status", "TEXT NOT NULL DEFAULT 'unknown'");
   ensureColumn(db, "providers", "chat_support_checked_at", "TEXT");
   ensureColumn(db, "providers", "chat_support_error", "TEXT");
+  ensureColumn(db, "providers", "stream_progress_timeout_ms", "INTEGER NOT NULL DEFAULT 40000");
   ensureColumn(db, "router_settings", "api_auth_enabled", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "router_settings", "first_token_timeout_policy", "TEXT NOT NULL DEFAULT 'off'");
   ensureColumn(db, "router_settings", "first_token_timeout_mode", "TEXT NOT NULL DEFAULT 'retry_then_switch'");
   ensureColumn(db, "requests", "headers_at", "TEXT");
   ensureColumn(db, "requests", "headers_ms", "INTEGER");
+  ensureColumn(db, "requests", "max_stream_chunk_idle_ms", "INTEGER");
+  ensureColumn(db, "requests", "max_meaningful_output_idle_ms", "INTEGER");
+  ensureColumn(db, "requests", "final_output_idle_ms", "INTEGER");
+  ensureColumn(db, "requests", "stream_chunk_count", "INTEGER");
+  ensureColumn(db, "requests", "meaningful_output_event_count", "INTEGER");
+  ensureColumn(db, "requests", "first_token_timeout_ms", "INTEGER");
+  ensureColumn(db, "requests", "race_triggered", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "requests", "race_winner_sequence", "INTEGER");
   ensureColumn(db, "requests", "connection_reused", "INTEGER");
   ensureColumn(db, "requests", "network_connect_ms", "INTEGER");
   ensureColumn(db, "requests", "request_upload_ms", "INTEGER");
@@ -415,6 +433,21 @@ export function createDatabase(dataDir) {
        AND termination_reason = 'client_disconnected'
        AND request_id IN (SELECT request_id FROM repaired_client_completions);
     DROP TABLE repaired_client_completions;
+  `));
+  runOnce(db, "2026-08-phase-aware-stream-timeouts", () => db.exec(`
+    UPDATE providers
+       SET request_timeout_ms = 900000,
+           stream_idle_timeout_ms = 20000,
+           stream_progress_timeout_ms = 40000
+     WHERE (
+       request_timeout_ms = 300000
+       AND stream_idle_timeout_ms = 300000
+       AND stream_progress_timeout_ms = 40000
+     ) OR (
+       request_timeout_ms IN (300000, 900000)
+       AND stream_idle_timeout_ms = 30000
+       AND stream_progress_timeout_ms = 60000
+     );
   `));
   pruneExpiredDiagnostics(db);
   pruneExpiredRequests(db);
@@ -694,28 +727,29 @@ export function getAdaptiveFirstTokenTimeout(db, providerId, requestedModel, fal
     SELECT started_at, ttft_ms
       FROM requests
      WHERE final_provider_id = ? AND requested_model = ?
-       AND status = 'completed' AND ttft_ms IS NOT NULL AND started_at >= ?
+       AND status = 'completed' AND attempt_count = 1 AND is_failover = 0 AND race_triggered = 0
+       AND ttft_ms IS NOT NULL AND started_at >= ?
      ORDER BY started_at DESC
      LIMIT 100
   `).all(providerId, requestedModel, weekAgo);
   const recent = samples.filter((sample) => new Date(sample.started_at).getTime() >= dayAgo);
   const selected = recent.length >= 10 ? recent : samples;
-  if (selected.length < 5) {
+  if (selected.length < 10) {
     return {
       timeout_ms: Math.min(600000, Math.max(1000, positiveInt(fallbackMs, 30000))),
       baseline_ms: null,
+      baseline_type: "p75",
       sample_count: selected.length,
       source: "fallback",
     };
   }
 
   const values = selected.map((sample) => sample.ttft_ms).sort((left, right) => left - right);
-  const trim = Math.floor(values.length * 0.1);
-  const trimmed = values.slice(trim, values.length - trim || values.length);
-  const baselineMs = trimmed.reduce((sum, value) => sum + value, 0) / trimmed.length;
+  const baselineMs = values[Math.ceil(values.length * 0.75) - 1];
   return {
-    timeout_ms: Math.min(600000, Math.round(Math.max(5000, baselineMs * 1.8, baselineMs + 2000))),
+    timeout_ms: Math.min(15000, Math.max(8000, Math.round(baselineMs + 2000))),
     baseline_ms: Math.round(baselineMs),
+    baseline_type: "p75",
     sample_count: selected.length,
     source: recent.length >= 10 ? "24h" : "7d",
   };
@@ -727,6 +761,7 @@ export function getAdaptiveFirstTokenTimeoutPreview(db, fallbackMs = 30000) {
       FROM requests r
       JOIN providers p ON p.id = r.final_provider_id
      WHERE r.status = 'completed' AND r.final_provider_id IS NOT NULL
+       AND r.attempt_count = 1 AND r.is_failover = 0 AND r.race_triggered = 0
        AND r.requested_model IS NOT NULL AND r.requested_model != ''
      ORDER BY r.started_at DESC, r.rowid DESC
      LIMIT 1
@@ -735,6 +770,7 @@ export function getAdaptiveFirstTokenTimeoutPreview(db, fallbackMs = 30000) {
     return {
       timeout_ms: Math.min(600000, Math.max(1000, positiveInt(fallbackMs, 30000))),
       baseline_ms: null,
+      baseline_type: "p75",
       sample_count: 0,
       source: "fallback",
       provider_id: null,
@@ -762,8 +798,9 @@ export function saveProvider(db, input, id = randomUUID()) {
     has_secret: input.has_secret ?? existing?.has_secret ?? false,
     headers_json: JSON.stringify(input.headers ?? safeJson(existing?.headers_json, {})),
     connect_timeout_ms: positiveInt(input.connect_timeout_ms, existing?.connect_timeout_ms ?? 10000),
-    request_timeout_ms: positiveInt(input.request_timeout_ms, existing?.request_timeout_ms ?? 300000),
-    stream_idle_timeout_ms: positiveInt(input.stream_idle_timeout_ms, existing?.stream_idle_timeout_ms ?? 300000),
+    request_timeout_ms: positiveInt(input.request_timeout_ms, existing?.request_timeout_ms ?? 900000),
+    stream_idle_timeout_ms: positiveInt(input.stream_idle_timeout_ms, existing?.stream_idle_timeout_ms ?? 20000),
+    stream_progress_timeout_ms: positiveInt(input.stream_progress_timeout_ms, existing?.stream_progress_timeout_ms ?? 40000),
     max_concurrency: positiveInt(input.max_concurrency, existing?.max_concurrency ?? 8),
     enabled: input.enabled ?? existing?.enabled ?? true,
     failure_threshold: positiveInt(input.failure_threshold, existing?.failure_threshold ?? 3),
@@ -779,9 +816,9 @@ export function saveProvider(db, input, id = randomUUID()) {
   db.prepare(`
     INSERT INTO providers (
       id, name, base_url, default_model, test_model, cost_multiplier, has_secret, headers_json,
-      connect_timeout_ms, request_timeout_ms, stream_idle_timeout_ms,
+      connect_timeout_ms, request_timeout_ms, stream_idle_timeout_ms, stream_progress_timeout_ms,
       max_concurrency, enabled, failure_threshold, cooldown_ms, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       base_url = excluded.base_url,
@@ -793,6 +830,7 @@ export function saveProvider(db, input, id = randomUUID()) {
       connect_timeout_ms = excluded.connect_timeout_ms,
       request_timeout_ms = excluded.request_timeout_ms,
       stream_idle_timeout_ms = excluded.stream_idle_timeout_ms,
+      stream_progress_timeout_ms = excluded.stream_progress_timeout_ms,
       max_concurrency = excluded.max_concurrency,
       enabled = excluded.enabled,
       failure_threshold = excluded.failure_threshold,
@@ -810,6 +848,7 @@ export function saveProvider(db, input, id = randomUUID()) {
     values.connect_timeout_ms,
     values.request_timeout_ms,
     values.stream_idle_timeout_ms,
+    values.stream_progress_timeout_ms,
     values.max_concurrency,
     values.enabled ? 1 : 0,
     values.failure_threshold,

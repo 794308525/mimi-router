@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 
 const port = Number(process.env.MOCK_PORT || 19091);
 let sameRaceCalls = 0;
+let unsafeRaceCalls = 0;
 let recoverEarlyCalls = 0;
 let recoverLateCalls = 0;
 const chatRequestCounts = new Map();
@@ -42,6 +43,17 @@ const server = createServer((req, res) => {
         prompt_tokens_details: { cached_tokens: 3 },
         completion_tokens_details: { reasoning_tokens: 1 },
       };
+      if (req.url?.includes("/chat-idle-timeout/") && body.stream) {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write(`data: ${JSON.stringify({
+          id: "chatcmpl_idle",
+          object: "chat.completion.chunk",
+          created: 1786880000,
+          model: actualModel,
+          choices: [{ index: 0, delta: { content: "CHAT_START" }, finish_reason: null }],
+        })}\n\n`);
+        return;
+      }
       if (body.stream) {
         res.writeHead(200, { "content-type": "text/event-stream" });
         res.write(`data: ${JSON.stringify({
@@ -235,6 +247,92 @@ const server = createServer((req, res) => {
     if (req.url?.includes("/hang/")) return;
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
     const actualModel = `${body.model || "mock-model"}-actual`;
+    if (req.url?.includes("/idle-sample/") && body.stream) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(`event: response.created\ndata: ${JSON.stringify({ type: "response.created", response: { id: "resp_idle_sample", model: actualModel } })}\n\n`);
+      res.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "A" })}\n\n`);
+      setTimeout(() => {
+        if (res.destroyed) return;
+        res.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "B" })}\n\n`);
+        setTimeout(() => {
+          if (res.destroyed) return;
+          res.write(`event: response.completed\ndata: ${JSON.stringify({
+            type: "response.completed",
+            response: {
+              id: "resp_idle_sample",
+              model: actualModel,
+              usage: { input_tokens: 10, output_tokens: 2 },
+            },
+          })}\n\n`);
+          setTimeout(() => res.end(), 500);
+        }, 100);
+      }, 20);
+      return;
+    }
+    if (req.url?.includes("/idle-timeout/") && body.stream) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(`event: response.created\ndata: ${JSON.stringify({ type: "response.created", sequence_number: 0, response: { id: "resp_idle_timeout", model: actualModel } })}\n\n`);
+      res.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", sequence_number: 1, delta: "START" })}\n\n`);
+      return;
+    }
+    if (req.url?.includes("/progress-timeout/") && body.stream) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(`event: response.created\ndata: ${JSON.stringify({ type: "response.created", response: { id: "resp_progress_timeout", model: actualModel } })}\n\n`);
+      res.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "START" })}\n\n`);
+      const heartbeat = setInterval(() => res.write(": keep-alive\n\n"), 40);
+      res.once("close", () => clearInterval(heartbeat));
+      return;
+    }
+    if (req.url?.includes("/managed-progress/") && body.stream) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(`event: response.created\ndata: ${JSON.stringify({ type: "response.created", response: { id: "resp_managed_progress", model: actualModel } })}\n\n`);
+      res.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "START" })}\n\n`);
+      setTimeout(() => {
+        res.write(`event: response.web_search_call.searching\ndata: ${JSON.stringify({ type: "response.web_search_call.searching", item_id: "ws_1" })}\n\n`);
+        setTimeout(() => res.end(`event: response.completed\ndata: ${JSON.stringify({
+          type: "response.completed",
+          response: {
+            id: "resp_managed_progress",
+            model: actualModel,
+            usage: { input_tokens: 10, output_tokens: 2 },
+          },
+        })}\n\n`), 100);
+      }, 100);
+      return;
+    }
+    if (req.url?.includes("/image-progress/") && body.stream) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(`event: response.created\ndata: ${JSON.stringify({ type: "response.created", response: { id: "resp_image_progress", model: actualModel } })}\n\n`);
+      res.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "START" })}\n\n`);
+      setTimeout(() => {
+        if (res.destroyed) return;
+        res.write(`event: response.image_generation_call.partial_image\ndata: ${JSON.stringify({
+          type: "response.image_generation_call.partial_image",
+          item_id: "img_1",
+          partial_image_index: 0,
+          partial_image_b64: "aW1hZ2U=",
+        })}\n\n`);
+        setTimeout(() => {
+          if (res.destroyed) return;
+          res.write(`event: response.image_generation_call.completed\ndata: ${JSON.stringify({
+            type: "response.image_generation_call.completed",
+            item_id: "img_1",
+          })}\n\n`);
+          setTimeout(() => {
+            if (res.destroyed) return;
+            res.end(`event: response.completed\ndata: ${JSON.stringify({
+              type: "response.completed",
+              response: {
+                id: "resp_image_progress",
+                model: actualModel,
+                usage: { input_tokens: 10, output_tokens: 2 },
+              },
+            })}\n\n`);
+          }, 100);
+        }, 100);
+      }, 100);
+      return;
+    }
     if (compact) {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({
@@ -244,6 +342,20 @@ const server = createServer((req, res) => {
         output: [{ type: "compaction", id: "cmp_mock", encrypted_content: "mock" }],
         usage: { input_tokens: 18, output_tokens: 2, input_tokens_details: { cached_tokens: 3 } },
       }));
+      return;
+    }
+    if (req.url?.includes("/partial-open/") && body.stream) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(`event: response.created\ndata: ${JSON.stringify({ type: "response.created", response: { id: "resp_partial_open", model: actualModel } })}\n\n`);
+      res.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "PARTIAL" })}\n\n`);
+      res.write(`event: response.in_progress\ndata: ${JSON.stringify({
+        type: "response.in_progress",
+        response: {
+          id: "resp_partial_open",
+          model: actualModel,
+          usage: { input_tokens: 20, output_tokens: 3, input_tokens_details: { cached_tokens: 4 } },
+        },
+      })}\n\n`);
       return;
     }
     if (req.url?.includes("/partial/") && body.stream) {
@@ -281,9 +393,12 @@ const server = createServer((req, res) => {
       return;
     }
     const sameRaceCall = req.url?.includes("/same-race/") ? ++sameRaceCalls : 0;
-    const headerDelay = req.url?.includes("/fast/") || sameRaceCall ? 10 : 220;
+    const unsafeRaceCall = req.url?.includes("/unsafe-race/") ? ++unsafeRaceCalls : 0;
+    const headerDelay = req.url?.includes("/fast/") || sameRaceCall || unsafeRaceCall ? 10 : 220;
     const firstOutputDelay = sameRaceCall
       ? (sameRaceCall === 1 ? 220 : 20)
+      : unsafeRaceCall
+        ? (unsafeRaceCall === 1 ? 220 : 20)
       : req.url?.includes("/slow/") ? 220 : req.url?.includes("/fast/") ? 20 : 40;
     setTimeout(() => {
       if (body.stream) {

@@ -92,6 +92,12 @@ test("records immediately, fails over, streams unchanged, and captures usage", a
   assert.equal(completed.is_failover, 1);
   assert.equal(completed.input_tokens, 12);
   assert.equal(completed.output_tokens, 5);
+  assert.ok(Number.isInteger(completed.max_stream_chunk_idle_ms));
+  assert.ok(completed.max_stream_chunk_idle_ms >= 0);
+  assert.ok(Number.isInteger(completed.max_meaningful_output_idle_ms));
+  assert.equal(completed.final_output_idle_ms, null);
+  assert.ok(completed.stream_chunk_count >= 2);
+  assert.ok(completed.meaningful_output_event_count >= 1);
   assert.ok([0, 1].includes(completed.connection_reused));
   assert.ok(Number.isInteger(completed.request_upload_ms));
   assert.ok(Number.isInteger(completed.upstream_wait_ms));
@@ -712,6 +718,9 @@ test("races one different channel after a first-token timeout", async () => {
   const detail = await get(`/api/requests/${completed.id}`);
   assert.equal(detail.status, "completed");
   assert.equal(detail.attempt_count, 2);
+  assert.equal(detail.first_token_timeout_ms, 50);
+  assert.equal(detail.race_triggered, 1);
+  assert.equal(detail.race_winner_sequence, 2);
   assert.deepEqual(
     detail.attempts.map((attempt) => attempt.provider_name),
     ["Slow first token", "Fast fallback"],
@@ -742,7 +751,15 @@ test("races a second request on the same channel without marking failover", asyn
   const response = await fetch(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model: "gpt-5.6-sol", input: "same channel", stream: true }),
+    body: JSON.stringify({
+      model: "gpt-5.6-sol",
+      input: "same channel",
+      stream: true,
+      tools: [
+        { type: "function", name: "local_function", parameters: { type: "object", properties: {} } },
+        { type: "custom", name: "local_custom" },
+      ],
+    }),
   });
   assert.equal(response.status, 200);
   assert.match(await response.text(), /response\.output_text\.delta/);
@@ -752,12 +769,56 @@ test("races a second request on the same channel without marking failover", asyn
   assert.equal(detail.status, "completed");
   assert.equal(detail.attempt_count, 2);
   assert.equal(detail.is_failover, 0);
+  assert.equal(detail.first_token_timeout_ms, 50);
+  assert.equal(detail.race_triggered, 1);
+  assert.equal(detail.race_winner_sequence, 2);
   assert.deepEqual(
     detail.attempts.map((attempt) => attempt.provider_name),
     ["Same channel race", "Same channel race"],
   );
   assert.equal(detail.attempts.filter((attempt) => attempt.status === "completed").length, 1);
   assert.equal(detail.attempts.filter((attempt) => attempt.error_category === "race_lost").length, 1);
+});
+
+test("keeps managed upstream tools out of request racing", async () => {
+  const provider = await post("/api/providers", {
+    name: "Managed tool retry",
+    base_url: `http://127.0.0.1:${mockPort}/unsafe-race/v1`,
+    default_model: "mock-model",
+  });
+  const routes = await get("/api/routes");
+  await put(`/api/route-groups/${routes.groups[0].id}`, {
+    ...routes.groups[0],
+    max_attempts: 3,
+    members: [{ provider_id: provider.id, priority: 1, weight: 100, enabled: true }],
+  });
+  await put("/api/router-settings", {
+    first_token_timeout_policy: "fixed",
+    first_token_timeout_ms: 50,
+    first_token_timeout_mode: "race_same",
+  });
+
+  const response = await fetch(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model: "gpt-5.6-sol",
+      input: "managed tool",
+      stream: true,
+      tools: [{ type: "web_search" }],
+    }),
+  });
+  assert.equal(response.status, 200);
+  assert.match(await response.text(), /response\.output_text\.delta/);
+
+  const completed = (await get("/api/requests?limit=10"))[0];
+  const detail = await get(`/api/requests/${completed.id}`);
+  assert.equal(detail.status, "completed");
+  assert.equal(detail.attempt_count, 2);
+  assert.equal(detail.first_token_timeout_ms, 50);
+  assert.equal(detail.race_triggered, 0);
+  assert.equal(detail.race_winner_sequence, null);
+  assert.equal(detail.attempts.some((attempt) => attempt.error_category === "race_lost"), false);
 });
 
 test("keeps response.completed successful when the client closes before upstream EOF", async () => {
@@ -804,12 +865,265 @@ test("keeps response.completed successful when the client closes before upstream
       assert.equal(detail.cost_status, "confirmed");
       assert.equal(detail.input_tokens, 24);
       assert.equal(detail.output_tokens, 2);
+      assert.ok(detail.max_stream_chunk_idle_ms < 250);
+      assert.equal(detail.final_output_idle_ms, null);
       assert.equal(detail.attempts[0].status, "completed");
       assert.equal(detail.attempts[0].last_stream_event, "response.completed");
     }
   } finally {
     await put(`/api/route-groups/${group.id}`, { ...group, members: originalMembers });
     await send("DELETE", `/api/providers/${terminal.id}`, {});
+  }
+});
+
+test("records chunk and meaningful-output gaps without counting post-terminal EOF waits", async () => {
+  const provider = await post("/api/providers", {
+    name: "Idle sample upstream",
+    base_url: `http://127.0.0.1:${mockPort}/idle-sample/v1`,
+    default_model: "gpt-5.6-sol",
+    request_timeout_ms: 3000,
+    stream_idle_timeout_ms: 3000,
+  });
+  const routes = await get("/api/routes");
+  const group = routes.groups[0];
+  try {
+    await put(`/api/route-groups/${group.id}`, {
+      ...group,
+      failover_enabled: false,
+      max_attempts: 1,
+      members: [{ provider_id: provider.id, priority: 1, weight: 100, enabled: true }],
+    });
+    await put("/api/router-settings", {
+      first_token_timeout_policy: "fixed",
+      first_token_timeout_ms: 2000,
+      first_token_timeout_mode: "retry_then_switch",
+    });
+
+    const response = await fetch(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.6-sol", input: "idle sample", stream: true }),
+    });
+    const requestId = response.headers.get("x-codex-router-request-id");
+    assert.ok(requestId);
+    assert.match(await response.text(), /response\.completed/);
+
+    const detail = await waitForRequest(requestId, (request) => request.status === "completed");
+    assert.ok(detail.max_stream_chunk_idle_ms >= 50);
+    assert.ok(detail.max_stream_chunk_idle_ms < 250);
+    assert.ok(detail.max_meaningful_output_idle_ms >= 70);
+    assert.ok(detail.max_meaningful_output_idle_ms < 250);
+    assert.equal(detail.final_output_idle_ms, null);
+    assert.ok(detail.stream_chunk_count >= 3);
+    assert.equal(detail.meaningful_output_event_count, 2);
+  } finally {
+    await put(`/api/route-groups/${group.id}`, group);
+    await send("DELETE", `/api/providers/${provider.id}`, {});
+  }
+});
+
+test("records final output idle time when the upstream request timeout interrupts a stream", async () => {
+  const provider = await post("/api/providers", {
+    name: "Idle timeout upstream",
+    base_url: `http://127.0.0.1:${mockPort}/idle-timeout/v1`,
+    default_model: "gpt-5.6-sol",
+    request_timeout_ms: 350,
+    stream_idle_timeout_ms: 3000,
+  });
+  const routes = await get("/api/routes");
+  const group = routes.groups[0];
+  try {
+    await put(`/api/route-groups/${group.id}`, {
+      ...group,
+      failover_enabled: false,
+      max_attempts: 1,
+      members: [{ provider_id: provider.id, priority: 1, weight: 100, enabled: true }],
+    });
+
+    const response = await fetch(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.6-sol", input: "idle timeout", stream: true }),
+    });
+    const requestId = response.headers.get("x-codex-router-request-id");
+    assert.ok(requestId);
+    const stream = await response.text();
+    assert.match(stream, /event: error/);
+    assert.match(stream, /request_timeout/);
+    const streamError = JSON.parse(stream.match(/event: error\ndata: ([^\n]+)\n\n/)?.[1] ?? "null");
+    assert.deepEqual(Object.keys(streamError).sort(), ["code", "message", "param", "sequence_number", "type"]);
+    assert.equal(streamError.type, "error");
+    assert.equal(streamError.code, "request_timeout");
+    assert.equal(streamError.param, null);
+    assert.equal(streamError.sequence_number, 2);
+    assert.match(streamError.message, /请求总时长超过/);
+
+    const detail = await waitForRequest(requestId, (request) => request.status === "failed");
+    assert.equal(detail.error_category, "request_timeout");
+    assert.ok(detail.final_output_idle_ms >= 200);
+    assert.ok(detail.final_output_idle_ms < 1000);
+    assert.equal(detail.stream_chunk_count, 1);
+    assert.equal(detail.meaningful_output_event_count, 1);
+  } finally {
+    await put(`/api/route-groups/${group.id}`, group);
+    await send("DELETE", `/api/providers/${provider.id}`, {});
+  }
+});
+
+test("terminates a stream after the configured post-first-token no-data timeout", async () => {
+  const provider = await post("/api/providers", {
+    name: "Stream no-data timeout upstream",
+    base_url: `http://127.0.0.1:${mockPort}/idle-timeout/v1`,
+    default_model: "gpt-5.6-sol",
+    request_timeout_ms: 3000,
+    stream_idle_timeout_ms: 150,
+    stream_progress_timeout_ms: 1000,
+  });
+  const routes = await get("/api/routes");
+  const group = routes.groups[0];
+  try {
+    await put(`/api/route-groups/${group.id}`, {
+      ...group,
+      failover_enabled: true,
+      max_attempts: 3,
+      members: [{ provider_id: provider.id, priority: 1, weight: 100, enabled: true }],
+    });
+
+    const response = await fetch(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.6-sol", input: "stream idle timeout", stream: true }),
+    });
+    const requestId = response.headers.get("x-codex-router-request-id");
+    const stream = await response.text();
+    assert.match(stream, /START/);
+    assert.match(stream, /event: error/);
+    assert.match(stream, /stream_idle_timeout/);
+
+    const detail = await waitForRequest(requestId, (request) => request.status === "failed");
+    assert.equal(detail.error_category, "stream_idle_timeout");
+    assert.equal(detail.attempt_count, 1);
+    assert.ok(detail.final_output_idle_ms >= 100);
+  } finally {
+    await put(`/api/route-groups/${group.id}`, group);
+    await send("DELETE", `/api/providers/${provider.id}`, {});
+  }
+});
+
+test("terminates heartbeat-only streams after the configured no-progress timeout", async () => {
+  const provider = await post("/api/providers", {
+    name: "Stream no-progress timeout upstream",
+    base_url: `http://127.0.0.1:${mockPort}/progress-timeout/v1`,
+    default_model: "gpt-5.6-sol",
+    request_timeout_ms: 3000,
+    stream_idle_timeout_ms: 120,
+    stream_progress_timeout_ms: 220,
+  });
+  const routes = await get("/api/routes");
+  const group = routes.groups[0];
+  try {
+    await put(`/api/route-groups/${group.id}`, {
+      ...group,
+      failover_enabled: true,
+      max_attempts: 3,
+      members: [{ provider_id: provider.id, priority: 1, weight: 100, enabled: true }],
+    });
+
+    const response = await fetch(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.6-sol", input: "stream progress timeout", stream: true }),
+    });
+    const requestId = response.headers.get("x-codex-router-request-id");
+    const stream = await response.text();
+    assert.match(stream, /START/);
+    assert.match(stream, /stream_progress_timeout/);
+
+    const detail = await waitForRequest(requestId, (request) => request.status === "failed");
+    assert.equal(detail.error_category, "stream_progress_timeout");
+    assert.equal(detail.attempt_count, 1);
+    assert.ok(detail.stream_chunk_count >= 4);
+    assert.equal(detail.meaningful_output_event_count, 1);
+  } finally {
+    await put(`/api/route-groups/${group.id}`, group);
+    await send("DELETE", `/api/providers/${provider.id}`, {});
+  }
+});
+
+test("counts managed-tool work states as meaningful stream progress", async () => {
+  const provider = await post("/api/providers", {
+    name: "Managed-tool progress upstream",
+    base_url: `http://127.0.0.1:${mockPort}/managed-progress/v1`,
+    default_model: "gpt-5.6-sol",
+    request_timeout_ms: 3000,
+    stream_idle_timeout_ms: 150,
+    stream_progress_timeout_ms: 180,
+  });
+  const routes = await get("/api/routes");
+  const group = routes.groups[0];
+  try {
+    await put(`/api/route-groups/${group.id}`, {
+      ...group,
+      failover_enabled: false,
+      max_attempts: 1,
+      members: [{ provider_id: provider.id, priority: 1, weight: 100, enabled: true }],
+    });
+
+    const response = await fetch(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.6-sol", input: "managed progress", stream: true }),
+    });
+    const requestId = response.headers.get("x-codex-router-request-id");
+    const stream = await response.text();
+    assert.match(stream, /response\.web_search_call\.searching/);
+    assert.match(stream, /response\.completed/);
+
+    const detail = await waitForRequest(requestId, (request) => request.status === "completed");
+    assert.equal(detail.error_category, null);
+    assert.equal(detail.meaningful_output_event_count, 2);
+  } finally {
+    await put(`/api/route-groups/${group.id}`, group);
+    await send("DELETE", `/api/providers/${provider.id}`, {});
+  }
+});
+
+test("counts partial images and managed-tool completion as stream progress", async () => {
+  const provider = await post("/api/providers", {
+    name: "Image progress upstream",
+    base_url: `http://127.0.0.1:${mockPort}/image-progress/v1`,
+    default_model: "gpt-5.6-sol",
+    request_timeout_ms: 3000,
+    stream_idle_timeout_ms: 150,
+    stream_progress_timeout_ms: 180,
+  });
+  const routes = await get("/api/routes");
+  const group = routes.groups[0];
+  try {
+    await put(`/api/route-groups/${group.id}`, {
+      ...group,
+      failover_enabled: false,
+      max_attempts: 1,
+      members: [{ provider_id: provider.id, priority: 1, weight: 100, enabled: true }],
+    });
+
+    const response = await fetch(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.6-sol", input: "image progress", stream: true }),
+    });
+    const requestId = response.headers.get("x-codex-router-request-id");
+    const stream = await response.text();
+    assert.match(stream, /response\.image_generation_call\.partial_image/);
+    assert.match(stream, /response\.image_generation_call\.completed/);
+    assert.match(stream, /response\.completed/);
+
+    const detail = await waitForRequest(requestId, (request) => request.status === "completed");
+    assert.equal(detail.error_category, null);
+    assert.ok(detail.meaningful_output_event_count >= 3);
+  } finally {
+    await put(`/api/route-groups/${group.id}`, group);
+    await send("DELETE", `/api/providers/${provider.id}`, {});
   }
 });
 
@@ -842,6 +1156,7 @@ test("records a downstream disconnect separately without marking the provider fa
   assert.equal(detail.termination_reason, "client_disconnected");
   assert.equal(detail.error_category, "client_disconnected");
   assert.equal(detail.cost_status, "unknown");
+  assert.equal(detail.final_output_idle_ms, null);
   const after = (await get("/api/providers")).find((provider) => provider.id === fast.id);
   assert.equal(after.consecutive_failures, before.consecutive_failures);
 });
@@ -849,7 +1164,7 @@ test("records a downstream disconnect separately without marking the provider fa
 test("keeps partial usage and cost when a streamed client disconnects", async () => {
   const partial = await post("/api/providers", {
     name: "Partial usage upstream",
-    base_url: `http://127.0.0.1:${mockPort}/partial/v1`,
+    base_url: `http://127.0.0.1:${mockPort}/partial-open/v1`,
     default_model: "gpt-5.6-sol",
   });
   const routes = await get("/api/routes");
@@ -867,12 +1182,12 @@ test("keeps partial usage and cost when a streamed client disconnects", async ()
   assert.ok(requestId);
   const reader = response.body.getReader();
   let received = "";
-  while (!received.includes("response.incomplete")) {
+  while (!received.includes("response.in_progress")) {
     const result = await reader.read();
     if (result.done) break;
     received += Buffer.from(result.value).toString("utf8");
   }
-  assert.match(received, /response\.incomplete/);
+  assert.match(received, /response\.in_progress/);
   await reader.cancel();
   const detail = await waitForRequest(requestId, (request) => request.status === "client_disconnected");
   assert.equal(detail.cost_status, "partial");
@@ -925,6 +1240,49 @@ test("forwards native Chat Completions streams and records Chat usage", async ()
     assert.equal(detail.attempts[0].upstream_protocol, "chat");
     const updated = (await get("/api/providers")).find((item) => item.id === provider.id);
     assert.equal(updated.chat_support_status, "supported");
+  } finally {
+    await put(`/api/route-groups/${group.id}`, group);
+    await send("DELETE", `/api/providers/${provider.id}`, {});
+  }
+});
+
+test("returns a Chat-compatible stream error after a post-first-token timeout", async () => {
+  const provider = await post("/api/providers", {
+    name: "Native Chat idle timeout",
+    base_url: `http://127.0.0.1:${mockPort}/chat-idle-timeout/v1`,
+    default_model: "gpt-5.6-terra",
+    request_timeout_ms: 3000,
+    stream_idle_timeout_ms: 150,
+    stream_progress_timeout_ms: 1000,
+  });
+  const routes = await get("/api/routes");
+  const group = routes.groups[0];
+  try {
+    await put(`/api/route-groups/${group.id}`, {
+      ...group,
+      failover_enabled: true,
+      max_attempts: 3,
+      members: [{ provider_id: provider.id, priority: 1, weight: 100, enabled: true }],
+    });
+    const response = await fetch(`http://127.0.0.1:${gatewayPort}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.6-terra",
+        messages: [{ role: "user", content: "hello" }],
+        stream: true,
+      }),
+    });
+    const requestId = response.headers.get("x-codex-router-request-id");
+    const stream = await response.text();
+    assert.match(stream, /CHAT_START/);
+    assert.match(stream, /"code":"stream_idle_timeout"/);
+    assert.match(stream, /data: \[DONE\]/);
+
+    const detail = await waitForRequest(requestId, (request) => request.status === "failed");
+    assert.equal(detail.error_category, "stream_idle_timeout");
+    assert.equal(detail.client_protocol, "chat");
+    assert.equal(detail.attempt_count, 1);
   } finally {
     await put(`/api/route-groups/${group.id}`, group);
     await send("DELETE", `/api/providers/${provider.id}`, {});

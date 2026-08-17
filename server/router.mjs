@@ -60,6 +60,16 @@ class FirstTokenTimeoutError extends Error {
     this.name = "FirstTokenTimeoutError";
   }
 }
+class RouterTimeoutError extends Error {
+  constructor(category, timeoutMs, message) {
+    super(message);
+    this.name = "RouterTimeoutError";
+    this.category = category;
+    this.code = category;
+    this.status = 504;
+    this.timeoutMs = timeoutMs;
+  }
+}
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
   "content-encoding",
@@ -98,6 +108,43 @@ function requestStatusForTermination(reason) {
   return reason === "user_cancelled" ? "cancelled" : "client_disconnected";
 }
 
+function effectiveAttemptError(error, attemptController) {
+  const reason = attemptController?.signal.aborted ? attemptController.signal.reason : null;
+  return reason instanceof RouterTimeoutError ? reason : error;
+}
+
+function streamFailureCategory(error) {
+  return error instanceof RouterTimeoutError ? error.category : "stream_interrupted";
+}
+
+function createStreamProgressTracker(timeoutMs) {
+  let started = false;
+  let stopped = false;
+  let lastProgressMono = null;
+  return {
+    start(observedAtMono = performance.now()) {
+      if (started || stopped) return;
+      started = true;
+      lastProgressMono = observedAtMono;
+    },
+    note(observedAtMono = performance.now()) {
+      if (stopped) return;
+      started = true;
+      lastProgressMono = observedAtMono;
+    },
+    stop() {
+      stopped = true;
+    },
+    remaining(observedAtMono = performance.now()) {
+      if (!started || stopped || !(timeoutMs > 0)) return Infinity;
+      return Math.max(0, timeoutMs - (observedAtMono - lastProgressMono));
+    },
+    get timeoutMs() {
+      return timeoutMs;
+    },
+  };
+}
+
 function streamPhaseForPayload(payload) {
   const type = String(payload?.type || payload?.object || "");
   if (type === "response.created") return "headers";
@@ -125,6 +172,8 @@ export class RouterEngine {
     this.controllers = new Map();
     this.attemptObservations = new Map();
     this.firstTokenTimeoutCache = new Map();
+    this.streamSamples = new Map();
+    this.streamSequenceNumbers = new Map();
     this.circuitWaiters = new Map();
   }
 
@@ -309,7 +358,11 @@ export class RouterEngine {
         provider.connect_timeout_ms,
       );
       const requestTimer = setTimeout(
-        () => attemptController.abort(new DOMException("上游请求超时", "TimeoutError")),
+        () => attemptController.abort(new RouterTimeoutError(
+          "request_timeout",
+          provider.request_timeout_ms,
+          `请求总时长超过 ${Math.round(provider.request_timeout_ms / 1000)} 秒`,
+        )),
         provider.request_timeout_ms,
       );
       try {
@@ -339,10 +392,12 @@ export class RouterEngine {
       } catch (error) {
         clearTimeout(connectTimer);
         clearTimeout(requestTimer);
+        error = effectiveAttemptError(error, attemptController);
         this.updateAttempt(attemptId, networkTimingForError(error) ?? {});
         this.releaseProvider(provider.id, probe);
         const terminationReason = clientTerminationReason(clientController);
-        const category = terminationReason || (error?.name === "TimeoutError" ? "timeout" : "network");
+        const category = terminationReason
+          || (error instanceof RouterTimeoutError ? error.category : error?.name === "TimeoutError" ? "timeout" : "network");
         const message = terminationReason ? terminationMessage(terminationReason) : safeMessage(error);
         this.finishAttempt(
           attemptId,
@@ -467,6 +522,12 @@ export class RouterEngine {
       }
 
       try {
+        const firstTokenTimeoutMs = (isStream || protocolWrapped)
+          ? this.resolveFirstTokenTimeoutMs(routerSettings, provider.id, requestedModel)
+          : 0;
+        if (firstTokenTimeoutMs > 0) {
+          this.updateRequest(requestId, { first_token_timeout_ms: firstTokenTimeoutMs });
+        }
         const forwardContext = {
           requestId,
           requestStartedMono: startedMono,
@@ -484,9 +545,8 @@ export class RouterEngine {
           chatIncludeUsage: clientProtocol === "chat" && body.stream_options?.include_usage === true,
           stickyTtlSeconds: route.group.sticky_enabled ? route.group.sticky_ttl_seconds : 0,
           streamIdleTimeoutMs: provider.stream_idle_timeout_ms,
-          firstTokenTimeoutMs: (isStream || protocolWrapped)
-            ? this.resolveFirstTokenTimeoutMs(routerSettings, provider.id, requestedModel)
-            : 0,
+          streamProgressTimeoutMs: provider.stream_progress_timeout_ms,
+          firstTokenTimeoutMs,
           attemptController,
           requestTimer,
         };
@@ -525,6 +585,7 @@ export class RouterEngine {
         return;
       } catch (error) {
         clearTimeout(requestTimer);
+        error = effectiveAttemptError(error, attemptController);
         if (this.completeObservedSuccess({
           requestId,
           requestStartedMono: startedMono,
@@ -590,8 +651,11 @@ export class RouterEngine {
           continue;
         }
         const terminationReason = clientTerminationReason(clientController);
-        const category = terminationReason || "stream_interrupted";
+        const category = terminationReason || streamFailureCategory(error);
         const message = terminationReason ? terminationMessage(terminationReason) : safeMessage(error);
+        const streamErrorSequence = !terminationReason && res.headersSent
+          ? this.nextStreamSequence(requestId)
+          : null;
         this.finishAttempt(
           attemptId,
           attemptMono,
@@ -612,8 +676,10 @@ export class RouterEngine {
           stream_phase: this.getAttempt(attemptId)?.stream_phase || "streaming",
           cost_status: this.requestCostStatus(requestId),
         });
-        if (!res.headersSent) sendJson(res, 502, errorBody("上游流式响应中断", requestId));
-        else res.destroy(error);
+        if (!res.headersSent) sendJson(res, error?.status || 502, errorBody(message, requestId));
+        else if (!terminationReason) {
+          writeProtocolStreamError(res, clientProtocol, error, requestId, streamErrorSequence);
+        }
         this.controllers.delete(requestId);
         return;
       }
@@ -661,7 +727,11 @@ export class RouterEngine {
       provider.connect_timeout_ms,
     );
     const requestTimer = setTimeout(
-      () => attemptController.abort(new DOMException("上游请求超时", "TimeoutError")),
+      () => attemptController.abort(new RouterTimeoutError(
+        "request_timeout",
+        provider.request_timeout_ms,
+        `请求总时长超过 ${Math.round(provider.request_timeout_ms / 1000)} 秒`,
+      )),
       provider.request_timeout_ms,
     );
     try {
@@ -699,10 +769,12 @@ export class RouterEngine {
     } catch (error) {
       clearTimeout(connectTimer);
       clearTimeout(requestTimer);
+      error = effectiveAttemptError(error, attemptController);
       this.updateAttempt(attemptId, networkTimingForError(error) ?? {});
       this.releaseProvider(provider.id, probe);
       const terminationReason = clientTerminationReason(clientController);
-      const category = terminationReason || (error?.name === "TimeoutError" ? "timeout" : "network");
+      const category = terminationReason
+        || (error instanceof RouterTimeoutError ? error.category : error?.name === "TimeoutError" ? "timeout" : "network");
       const message = terminationReason ? terminationMessage(terminationReason) : safeMessage(error);
       this.finishAttempt(
         attemptId,
@@ -742,6 +814,7 @@ export class RouterEngine {
       res,
       stickyTtlSeconds,
       streamIdleTimeoutMs,
+      streamProgressTimeoutMs,
       firstTokenTimeoutMs,
       requestTimer,
       clientController,
@@ -762,6 +835,8 @@ export class RouterEngine {
         upstreamModel,
         payload,
       }),
+      onMeaningfulOutput: () => this.noteMeaningfulStreamOutput(requestId),
+      onTerminal: () => this.noteStreamTerminal(requestId),
     });
     startRaceCandidatePump(original);
 
@@ -776,6 +851,7 @@ export class RouterEngine {
         res,
         stickyTtlSeconds,
         streamIdleTimeoutMs,
+        streamProgressTimeoutMs,
         clientController,
       });
       return;
@@ -787,6 +863,7 @@ export class RouterEngine {
 
     this.recordFirstTokenTimeout(provider);
     this.publish("provider.health_changed", { provider: getProvider(this.db, provider.id) });
+    this.updateRequest(requestId, { race_triggered: 1 });
     const fallback = await startRaceAttempt();
     let fallbackCandidate = null;
     if (fallback?.ok && fallback.upstream?.ok) {
@@ -805,6 +882,8 @@ export class RouterEngine {
           upstreamModel,
           payload,
         }),
+        onMeaningfulOutput: () => this.noteMeaningfulStreamOutput(requestId),
+        onTerminal: () => this.noteStreamTerminal(requestId),
       });
       startRaceCandidatePump(fallbackCandidate);
     } else if (fallback?.ok) {
@@ -814,6 +893,9 @@ export class RouterEngine {
     if (!fallbackCandidate) {
       const late = await original.firstEvent;
       if (late.kind === "output") {
+        this.updateRequest(requestId, {
+          race_winner_sequence: this.getAttempt(original.attemptId)?.sequence ?? null,
+        });
         await this.forwardRaceCandidate({
           candidate: original,
           requestId,
@@ -822,6 +904,7 @@ export class RouterEngine {
           res,
           stickyTtlSeconds,
           streamIdleTimeoutMs,
+          streamProgressTimeoutMs,
           clientController,
         });
         return;
@@ -838,6 +921,9 @@ export class RouterEngine {
       throw error;
     }
     const loser = winner === original ? fallbackCandidate : original;
+    this.updateRequest(requestId, {
+      race_winner_sequence: this.getAttempt(winner.attemptId)?.sequence ?? null,
+    });
     await this.cancelRaceCandidate(loser, "cancelled", "race_lost");
     await this.forwardRaceCandidate({
       candidate: winner,
@@ -847,6 +933,7 @@ export class RouterEngine {
       res,
       stickyTtlSeconds,
       streamIdleTimeoutMs,
+      streamProgressTimeoutMs,
       clientController,
     });
   }
@@ -859,10 +946,15 @@ export class RouterEngine {
     res,
     stickyTtlSeconds,
     streamIdleTimeoutMs,
+    streamProgressTimeoutMs,
     clientController,
   }) {
     const { upstream, reader, parser, buffered, provider, probe, attemptId, attemptMono, requestTimer } = candidate;
+    const progressTracker = createStreamProgressTracker(streamProgressTimeoutMs);
+    candidate.progressTracker = progressTracker;
+    candidate.samplingEnabled = true;
     this.markRaceFirstOutput(candidate, requestId, requestStartedMono);
+    progressTracker.start();
     try {
       this.forwardHeaders(res, upstream, requestId);
       res.statusCode = upstream.status;
@@ -870,17 +962,30 @@ export class RouterEngine {
       for (const buffer of buffered) {
         if (!res.write(buffer)) await onceDrain(res);
       }
-      for await (const chunk of streamReaderWithIdleTimeout(reader, streamIdleTimeoutMs)) {
-        const buffer = Buffer.from(chunk);
-        parser.push(buffer);
-        if (candidate.semanticFailure && !candidate.firstOutputRecorded) throw candidate.semanticFailure;
-        if (!res.write(buffer)) await onceDrain(res);
+      if (!candidate.terminalReached) {
+        for await (const chunk of streamReaderWithIdleTimeout(
+          reader,
+          streamIdleTimeoutMs,
+          progressTracker,
+          (idleMs, outcome) => this.noteStreamChunkWait(requestId, idleMs, outcome),
+        )) {
+          const buffer = Buffer.from(chunk);
+          parser.push(buffer);
+          if (candidate.semanticFailure && !candidate.firstOutputRecorded) throw candidate.semanticFailure;
+          if (!res.write(buffer)) await onceDrain(res);
+          if (candidate.terminalReached) break;
+        }
+      } else {
+        await reader.cancel().catch(() => {});
+        reader.releaseLock();
       }
-      parser.finish();
+      if (!candidate.terminalReached) parser.finish();
       if (candidate.semanticFailure && !candidate.firstOutputRecorded) throw candidate.semanticFailure;
+      if (!candidate.terminalReached) throw new Error("Responses SSE 流缺少结束事件");
       res.end();
     } catch (error) {
       clearTimeout(requestTimer);
+      error = effectiveAttemptError(error, candidate.attemptController);
       if (this.completeObservedSuccess({
         requestId,
         requestStartedMono,
@@ -898,8 +1003,11 @@ export class RouterEngine {
       })) return;
       this.releaseProvider(provider.id, probe);
       const terminationReason = clientTerminationReason(clientController);
-      const category = terminationReason || "stream_interrupted";
+      const category = terminationReason || streamFailureCategory(error);
       const message = terminationReason ? terminationMessage(terminationReason) : safeMessage(error);
+      const streamErrorSequence = !terminationReason && res.headersSent
+        ? this.nextStreamSequence(requestId)
+        : null;
       this.finishAttempt(
         attemptId,
         attemptMono,
@@ -920,8 +1028,10 @@ export class RouterEngine {
         stream_phase: candidate.streamPhase || "streaming",
         cost_status: this.requestCostStatus(requestId),
       });
-      if (!res.headersSent) sendJson(res, 502, errorBody("上游流式响应中断", requestId));
-      else res.destroy(error);
+      if (!res.headersSent) sendJson(res, error?.status || 502, errorBody(message, requestId));
+      else if (!terminationReason) {
+        writeProtocolStreamError(res, "responses", error, requestId, streamErrorSequence);
+      }
       return;
     }
     clearTimeout(requestTimer);
@@ -980,6 +1090,10 @@ export class RouterEngine {
   markRaceFirstOutput(candidate, requestId, requestStartedMono) {
     if (candidate.firstOutputCommitted) return;
     candidate.firstOutputCommitted = true;
+    this.startStreamSampling(requestId);
+    if (isTerminalStreamPayload(candidate.lastStreamEvent)) {
+      this.noteStreamTerminal(requestId);
+    }
     const firstByteAt = new Date();
     const ttft = Math.max(0, Math.round(performance.now() - requestStartedMono));
     this.db.prepare("UPDATE request_attempts SET first_byte_at = ? WHERE id = ?")
@@ -1042,6 +1156,7 @@ export class RouterEngine {
       protocolWrapped,
       stickyTtlSeconds,
       streamIdleTimeoutMs,
+      streamProgressTimeoutMs,
       firstTokenTimeoutMs,
       requestTimer,
     } = context;
@@ -1053,6 +1168,9 @@ export class RouterEngine {
     let semanticFailure = null;
     let incompleteFailure = null;
     let terminalEvent = upstreamProtocol === "chat" ? "chat.completion" : "response.completed";
+    let terminalReached = false;
+    let chatDone = false;
+    const progressTracker = createStreamProgressTracker(streamProgressTimeoutMs);
     const markFirstOutput = () => {
       if (firstOutputRecorded) return;
       firstOutputRecorded = true;
@@ -1068,6 +1186,10 @@ export class RouterEngine {
         stream_phase: "streaming",
         ...this.attemptNetworkTiming(attemptId),
       });
+      if (isStream) {
+        this.startStreamSampling(requestId);
+        progressTracker.start();
+      }
       this.recordFirstTokenSuccess(provider);
       this.emitRequest(requestId, "request.status_changed");
     };
@@ -1080,9 +1202,22 @@ export class RouterEngine {
           actualUpstreamModel = this.observeAttemptPayload({ requestId, attemptId, upstreamModel, payload }) || actualUpstreamModel;
           semanticFailure ??= semanticFailureFromPayload(payload, upstream.status);
           incompleteFailure ??= incompleteFailureFromPayload(payload);
+          if (!semanticFailure && isStreamProgressPayload(payload)) {
+            progressTracker.note();
+            this.noteMeaningfulStreamOutput(requestId);
+          }
           if (!semanticFailure && isMeaningfulStreamOutput(payload)) markFirstOutput();
+          if (upstreamProtocol === "responses" && isTerminalStreamPayload(payload)) {
+            terminalReached = true;
+            progressTracker.stop();
+            this.noteStreamTerminal(requestId);
+          }
         }, () => {
           if (upstreamProtocol === "chat") {
+            chatDone = true;
+            terminalReached = true;
+            progressTracker.stop();
+            this.noteStreamTerminal(requestId);
             terminalEvent = "chat.completion.done";
             this.updateAttempt(attemptId, { stream_phase: "completed", last_stream_event: terminalEvent });
           }
@@ -1110,14 +1245,31 @@ export class RouterEngine {
         for (const buffer of buffered) {
           if (!res.write(buffer)) await onceDrain(res);
         }
-        for await (const chunk of streamReaderWithIdleTimeout(reader, streamIdleTimeoutMs)) {
-          const buffer = Buffer.from(chunk);
-          parser.push(buffer);
-          if (semanticFailure && !firstOutputRecorded) throw semanticFailure;
-          if (!res.write(buffer)) await onceDrain(res);
+        if (!terminalReached) {
+          for await (const chunk of streamReaderWithIdleTimeout(
+            reader,
+            streamIdleTimeoutMs,
+            progressTracker,
+            (idleMs, outcome) => this.noteStreamChunkWait(requestId, idleMs, outcome),
+          )) {
+            const buffer = Buffer.from(chunk);
+            parser.push(buffer);
+            if (semanticFailure && !firstOutputRecorded) throw semanticFailure;
+            if (!res.write(buffer)) await onceDrain(res);
+            if (terminalReached) break;
+          }
+        } else {
+          await reader.cancel().catch(() => {});
+          reader.releaseLock();
         }
-        parser.finish();
+        if (!terminalReached) parser.finish();
         if (semanticFailure && !firstOutputRecorded) throw semanticFailure;
+        if (upstreamProtocol === "chat" && !chatDone) {
+          throw new Error("Chat Completions SSE 流缺少 [DONE] 结束标记");
+        }
+        if (upstreamProtocol === "responses" && !terminalReached) {
+          throw new Error("Responses SSE 流缺少结束事件");
+        }
         if (!firstOutputRecorded) markFirstOutput();
         res.end();
       } else {
@@ -1215,6 +1367,7 @@ export class RouterEngine {
       isStream,
       stickyTtlSeconds,
       streamIdleTimeoutMs,
+      streamProgressTimeoutMs,
       firstTokenTimeoutMs,
       requestTimer,
     } = context;
@@ -1223,6 +1376,8 @@ export class RouterEngine {
     let actualUpstreamModel = "";
     let semanticFailure = null;
     let firstOutputRecorded = false;
+    let terminalReached = false;
+    const progressTracker = createStreamProgressTracker(streamProgressTimeoutMs);
     const bridge = createResponsesToChatBridge({
       stream: isStream,
       includeUsage: Boolean(context.chatIncludeUsage),
@@ -1232,6 +1387,15 @@ export class RouterEngine {
         responseId = extractResponseId(payload) || responseId;
         actualUpstreamModel = this.observeAttemptPayload({ requestId, attemptId, upstreamModel, payload }) || actualUpstreamModel;
         semanticFailure ??= semanticFailureFromPayload(payload, upstream.status);
+        if (!semanticFailure && isStreamProgressPayload(payload)) {
+          progressTracker.note();
+          this.noteMeaningfulStreamOutput(requestId);
+        }
+        if (isTerminalStreamPayload(payload)) {
+          terminalReached = true;
+          progressTracker.stop();
+          this.noteStreamTerminal(requestId);
+        }
       },
     });
 
@@ -1250,6 +1414,9 @@ export class RouterEngine {
         stream_phase: "streaming",
         ...this.attemptNetworkTiming(attemptId),
       });
+      this.startStreamSampling(requestId);
+      if (terminalReached) this.noteStreamTerminal(requestId);
+      progressTracker.start();
       this.recordFirstTokenSuccess(provider);
       this.emitRequest(requestId, "request.status_changed");
     };
@@ -1276,15 +1443,26 @@ export class RouterEngine {
           if (!res.write(buffer)) await onceDrain(res);
         }
       }
-      for await (const chunk of streamReaderWithIdleTimeout(reader, streamIdleTimeoutMs)) {
-        const output = bridge.push(Buffer.from(chunk));
-        if (isStream) {
-          for (const buffer of output) {
-            if (!res.write(buffer)) await onceDrain(res);
+      if (!terminalReached) {
+        for await (const chunk of streamReaderWithIdleTimeout(
+          reader,
+          streamIdleTimeoutMs,
+          progressTracker,
+          (idleMs, outcome) => this.noteStreamChunkWait(requestId, idleMs, outcome),
+        )) {
+          const output = bridge.push(Buffer.from(chunk));
+          if (isStream) {
+            for (const buffer of output) {
+              if (!res.write(buffer)) await onceDrain(res);
+            }
           }
+          if (terminalReached) break;
         }
+      } else {
+        await reader.cancel().catch(() => {});
+        reader.releaseLock();
       }
-      const finalOutput = bridge.finish();
+      const finalOutput = terminalReached ? [] : bridge.finish();
       if (isStream) {
         for (const buffer of finalOutput) {
           if (!res.write(buffer)) await onceDrain(res);
@@ -1862,7 +2040,10 @@ export class RouterEngine {
   updateRequest(id, fields) {
     const allowed = [
       "headers_at", "headers_ms", "connection_reused", "network_connect_ms", "request_upload_ms",
-      "upstream_wait_ms", "first_byte_at", "ended_at", "duration_ms", "ttft_ms", "status",
+      "upstream_wait_ms", "first_byte_at", "ended_at", "duration_ms", "ttft_ms",
+      "max_stream_chunk_idle_ms", "max_meaningful_output_idle_ms", "final_output_idle_ms",
+      "stream_chunk_count", "meaningful_output_event_count",
+      "first_token_timeout_ms", "race_triggered", "race_winner_sequence", "status",
       "requested_model", "upstream_model", "actual_upstream_model", "reasoning_effort", "route_rule_id", "route_group_id",
       "client_protocol", "upstream_protocol", "protocol_wrapped",
       "final_provider_id", "attempt_count", "is_stream", "is_failover",
@@ -1904,6 +2085,11 @@ export class RouterEngine {
 
   observeAttemptPayload({ requestId, attemptId, upstreamModel, payload }) {
     const eventType = String(payload?.type || payload?.object || "");
+    const sequenceNumber = Number(payload?.sequence_number);
+    if (Number.isInteger(sequenceNumber) && sequenceNumber >= 0) {
+      const previousSequence = this.streamSequenceNumbers.get(requestId) ?? -1;
+      this.streamSequenceNumbers.set(requestId, Math.max(previousSequence, sequenceNumber));
+    }
     const phase = streamPhaseForPayload(payload);
     const usage = extractUsage(payload);
     const responseId = extractResponseId(payload);
@@ -1997,10 +2183,94 @@ export class RouterEngine {
     return this.db.prepare("SELECT cost_status FROM requests WHERE id = ?").get(requestId)?.cost_status || "unknown";
   }
 
+  nextStreamSequence(requestId) {
+    const next = (this.streamSequenceNumbers.get(requestId) ?? -1) + 1;
+    this.streamSequenceNumbers.set(requestId, next);
+    return next;
+  }
+
+  startStreamSampling(requestId, observedAtMono = performance.now()) {
+    let sample = this.streamSamples.get(requestId);
+    if (!sample) {
+      sample = {
+        started: false,
+        terminalAtMono: null,
+        interruptedAtMono: null,
+        lastMeaningfulOutputMono: null,
+        maxStreamChunkIdleMs: 0,
+        maxMeaningfulOutputIdleMs: 0,
+        streamChunkCount: 0,
+        meaningfulOutputEventCount: 0,
+      };
+      this.streamSamples.set(requestId, sample);
+    }
+    if (!sample.started) {
+      sample.started = true;
+      sample.lastMeaningfulOutputMono = observedAtMono;
+      sample.streamChunkCount = 1;
+      sample.meaningfulOutputEventCount = 1;
+    }
+    return sample;
+  }
+
+  noteMeaningfulStreamOutput(requestId, observedAtMono = performance.now()) {
+    const existing = this.streamSamples.get(requestId);
+    if (!existing?.started) {
+      this.startStreamSampling(requestId, observedAtMono);
+      return;
+    }
+    if (existing.terminalAtMono != null) return;
+    const idleMs = Math.max(0, Math.round(observedAtMono - existing.lastMeaningfulOutputMono));
+    existing.maxMeaningfulOutputIdleMs = Math.max(existing.maxMeaningfulOutputIdleMs, idleMs);
+    existing.lastMeaningfulOutputMono = observedAtMono;
+    existing.meaningfulOutputEventCount += 1;
+  }
+
+  noteStreamChunkWait(requestId, idleMs, outcome) {
+    const sample = this.streamSamples.get(requestId);
+    if (!sample?.started || sample.terminalAtMono != null) return;
+    if (outcome === "chunk") {
+      sample.maxStreamChunkIdleMs = Math.max(sample.maxStreamChunkIdleMs, Math.max(0, Math.round(idleMs)));
+      sample.streamChunkCount += 1;
+    } else if (outcome === "error") {
+      sample.interruptedAtMono = performance.now();
+    }
+  }
+
+  noteStreamTerminal(requestId, observedAtMono = performance.now()) {
+    const sample = this.streamSamples.get(requestId);
+    if (!sample?.started || sample.terminalAtMono != null) return;
+    const idleMs = Math.max(0, Math.round(observedAtMono - sample.lastMeaningfulOutputMono));
+    sample.maxMeaningfulOutputIdleMs = Math.max(sample.maxMeaningfulOutputIdleMs, idleMs);
+    sample.terminalAtMono = observedAtMono;
+  }
+
   finishRequest(id, startedMono, fields) {
     const endedAt = new Date().toISOString();
-    const duration = Math.max(0, Math.round(performance.now() - startedMono));
-    this.updateRequest(id, { ended_at: endedAt, duration_ms: duration, ...fields });
+    const finishedMono = performance.now();
+    const duration = Math.max(0, Math.round(finishedMono - startedMono));
+    const sample = this.streamSamples.get(id);
+    this.streamSamples.delete(id);
+    this.streamSequenceNumbers.delete(id);
+    const includeFinalIdle = sample?.started
+      && !["completed", "cancelled", "client_disconnected"].includes(fields.status)
+      && !["user_cancelled", "client_disconnected"].includes(fields.termination_reason);
+    const finalIdleEndMono = sample?.terminalAtMono ?? sample?.interruptedAtMono ?? finishedMono;
+    const sampleFields = sample?.started ? {
+      max_stream_chunk_idle_ms: sample.maxStreamChunkIdleMs,
+      max_meaningful_output_idle_ms: sample.maxMeaningfulOutputIdleMs,
+      final_output_idle_ms: includeFinalIdle
+        ? Math.max(0, Math.round(finalIdleEndMono - sample.lastMeaningfulOutputMono))
+        : null,
+      stream_chunk_count: sample.streamChunkCount,
+      meaningful_output_event_count: sample.meaningfulOutputEventCount,
+    } : {};
+    this.updateRequest(id, {
+      ended_at: endedAt,
+      duration_ms: duration,
+      ...sampleFields,
+      ...fields,
+    });
     this.emitRequest(id, "request.finished");
   }
 
@@ -2363,8 +2633,48 @@ function isMeaningfulStreamOutput(payload) {
   return delta == null || (typeof delta === "string" ? delta.length > 0 : true);
 }
 
+function isStreamProgressPayload(payload) {
+  const type = String(payload?.type || payload?.object || "");
+  if (type === "chat.completion.chunk") {
+    return (payload?.choices || []).some((choice) => {
+      if (choice?.finish_reason != null) return true;
+      const delta = choice?.delta || {};
+      return Boolean(delta.content || delta.refusal || delta.tool_calls?.length || delta.function_call);
+    });
+  }
+  if (type === "response.output_item.added") {
+    return [
+      "function_call",
+      "function_call_output",
+      "custom_tool_call",
+      "custom_tool_call_output",
+    ].includes(String(payload?.item?.type || ""));
+  }
+  if (/(?:\.in_progress|\.searching|\.generating|\.interpreting)$/.test(type)) {
+    return /(?:web_search|file_search|computer|code_interpreter|image_generation|mcp|tool)/.test(type);
+  }
+  if (type === "response.image_generation_call.partial_image") return true;
+  if (/\.completed$/.test(type)) {
+    return /(?:web_search|file_search|computer|code_interpreter|image_generation|mcp|tool)/.test(type);
+  }
+  if (!type.endsWith(".delta")) return false;
+  const delta = payload?.delta ?? payload?.arguments_delta ?? payload?.text;
+  return typeof delta === "string" ? delta.length > 0 : delta != null;
+}
+
+function isTerminalStreamPayload(payload) {
+  const type = typeof payload === "string"
+    ? payload
+    : String(payload?.type || payload?.object || "");
+  if (["response.completed", "response.incomplete", "response.failed", "error"].includes(type)) return true;
+  if (["chat.completion", "chat.completion.done"].includes(type)) return true;
+  return type === "chat.completion.chunk"
+    && (payload?.choices || []).some((choice) => choice?.finish_reason != null);
+}
+
 function isRaceSafeRequest(body) {
-  return !Array.isArray(body?.tools) || body.tools.length === 0;
+  if (!Array.isArray(body?.tools) || body.tools.length === 0) return true;
+  return body.tools.every((tool) => ["function", "custom"].includes(String(tool?.type || "")));
 }
 
 function createSseInspector(onPayload, onDone) {
@@ -2436,6 +2746,8 @@ function createRaceCandidate({
   probe,
   upstream,
   onPayload,
+  onMeaningfulOutput,
+  onTerminal,
 }) {
   const reader = upstream.body?.getReader();
   const candidate = {
@@ -2459,6 +2771,9 @@ function createRaceCandidate({
     incompleteFailure: null,
     firstOutputRecorded: false,
     firstOutputCommitted: false,
+    terminalReached: false,
+    progressTracker: null,
+    samplingEnabled: false,
     finished: false,
     firstEvent: null,
   };
@@ -2471,6 +2786,15 @@ function createRaceCandidate({
     onPayload?.(payload);
     candidate.semanticFailure ??= semanticFailureFromPayload(payload, upstream.status);
     candidate.incompleteFailure ??= incompleteFailureFromPayload(payload);
+    if (candidate.samplingEnabled && !candidate.semanticFailure && isStreamProgressPayload(payload)) {
+      candidate.progressTracker?.note();
+      onMeaningfulOutput?.();
+    }
+    if (isTerminalStreamPayload(payload)) {
+      candidate.terminalReached = true;
+      candidate.progressTracker?.stop();
+      if (candidate.samplingEnabled) onTerminal?.();
+    }
     if (!candidate.semanticFailure && isMeaningfulStreamOutput(payload)) {
       candidate.firstOutputRecorded = true;
     }
@@ -2603,33 +2927,60 @@ async function readUntilFirstConvertedOutput({
   }
 }
 
-async function* streamReaderWithIdleTimeout(reader, timeoutMs) {
+async function* streamReaderWithIdleTimeout(reader, timeoutMs, progressTracker = null, onIdle = null) {
+  let readerDone = false;
   try {
     while (true) {
-      let timer;
-      const timeout = new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new DOMException("上游流式响应空闲超时", "TimeoutError")), timeoutMs);
-      });
+      const idleStartedMono = performance.now();
+      const timers = [];
+      const waits = [reader.read()];
+      if (timeoutMs > 0) {
+        waits.push(new Promise((_, reject) => {
+          timers.push(setTimeout(() => reject(new RouterTimeoutError(
+            "stream_idle_timeout",
+            timeoutMs,
+            `首字后连续 ${Math.round(timeoutMs / 1000)} 秒未收到上游数据`,
+          )), timeoutMs));
+        }));
+      }
+      const progressRemainingMs = progressTracker?.remaining() ?? Infinity;
+      if (Number.isFinite(progressRemainingMs)) {
+        waits.push(new Promise((_, reject) => {
+          timers.push(setTimeout(() => reject(new RouterTimeoutError(
+            "stream_progress_timeout",
+            progressTracker.timeoutMs,
+            `首字后连续 ${Math.round(progressTracker.timeoutMs / 1000)} 秒无有效进展`,
+          )), progressRemainingMs));
+        }));
+      }
       let result;
       try {
-        result = await Promise.race([reader.read(), timeout]);
+        result = await Promise.race(waits);
+      } catch (error) {
+        onIdle?.(performance.now() - idleStartedMono, "error");
+        throw error;
       } finally {
-        clearTimeout(timer);
+        for (const timer of timers) clearTimeout(timer);
       }
-      if (result.done) return;
+      if (result.done) {
+        readerDone = true;
+        onIdle?.(performance.now() - idleStartedMono, "end");
+        return;
+      }
+      onIdle?.(performance.now() - idleStartedMono, "chunk");
       yield result.value;
     }
   } catch (error) {
-    await reader.cancel(error).catch(() => {});
     throw error;
   } finally {
+    if (!readerDone) await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
 }
 
-async function* streamWithIdleTimeout(stream, timeoutMs) {
+async function* streamWithIdleTimeout(stream, timeoutMs, onIdle = null) {
   if (!stream) throw new Error("上游响应正文为空");
-  yield* streamReaderWithIdleTimeout(stream.getReader(), timeoutMs);
+  yield* streamReaderWithIdleTimeout(stream.getReader(), timeoutMs, null, onIdle);
 }
 
 function sendJson(res, status, body) {
@@ -2649,6 +3000,32 @@ function errorBody(message, requestId) {
       request_id: requestId,
     },
   };
+}
+
+function writeProtocolStreamError(res, protocol, error, requestId, sequenceNumber = 0) {
+  if (res.writableEnded || res.destroyed) return;
+  const category = streamFailureCategory(error);
+  const message = safeMessage(error);
+  const payload = {
+    error: {
+      message,
+      type: "server_error",
+      param: null,
+      code: category,
+    },
+    request_id: requestId,
+  };
+  if (protocol === "chat") {
+    res.end(`data: ${JSON.stringify(payload)}\n\ndata: [DONE]\n\n`);
+    return;
+  }
+  res.end(`event: error\ndata: ${JSON.stringify({
+    type: "error",
+    code: category,
+    message,
+    param: null,
+    sequence_number: Number.isInteger(sequenceNumber) ? sequenceNumber : 0,
+  })}\n\n`);
 }
 
 function chatCompatibilityErrorBody(error, requestId) {

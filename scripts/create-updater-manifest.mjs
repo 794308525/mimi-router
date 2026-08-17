@@ -1,5 +1,4 @@
-import { createHash } from "node:crypto";
-import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 const [version, assetsDirectory = "release-assets", repository = process.env.GITHUB_REPOSITORY] = process.argv.slice(2);
@@ -38,21 +37,12 @@ const manifest = {
 };
 
 writeFileSync(join(assetsDir, "latest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
-
-const checksumFiles = readdirSync(assetsDir)
-  .filter((name) => !name.endsWith(".sig") && name !== "checksums-sha256.txt")
-  .sort();
-const checksums = checksumFiles.map((name) => `${sha256(join(assetsDir, name))}  ${name}`).join("\n");
-writeFileSync(join(assetsDir, "checksums-sha256.txt"), `${checksums}\n`, "utf8");
-console.log(`Updater manifest generated for v${version}`);
+for (const name of Object.values(names)) rmSync(join(assetsDir, `${name}.sig`));
+console.log(`Updater manifest generated for v${version}; temporary signatures removed`);
 
 function platform(name) {
   return {
     signature: readFileSync(join(assetsDir, `${name}.sig`), "utf8").trim(),
     url: `${downloadRoot}/${name}`,
   };
-}
-
-function sha256(path) {
-  return createHash("sha256").update(readFileSync(path)).digest("hex");
 }

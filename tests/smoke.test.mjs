@@ -80,10 +80,14 @@ test("compacts detailed diagnostics after three days without deleting request su
 test("runs compatibility data migrations only once", () => {
   const migrationDirectory = mkdtempSync(join(tmpdir(), "codex-router-migration-test-"));
   const first = createDatabase(migrationDirectory);
-  assert.equal(first.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 6);
+  assert.equal(first.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 7);
   const provider = saveProvider(first, {
     name: "Migration upstream",
     base_url: "http://127.0.0.1:19996/v1",
+  });
+  const customizedProvider = saveProvider(first, {
+    name: "Customized timeout upstream",
+    base_url: "http://127.0.0.1:19995/v1",
   });
   first.prepare(`
     INSERT INTO requests (
@@ -109,20 +113,30 @@ test("runs compatibility data migrations only once", () => {
     UPDATE providers
        SET health_status = 'unhealthy', circuit_state = 'open',
            circuit_open_until = ?, consecutive_failures = 3,
-           last_error_at = ?, last_error = 'network'
+           last_error_at = ?, last_error = 'network',
+           request_timeout_ms = 300000, stream_idle_timeout_ms = 300000
      WHERE id = ?
   `).run(
     new Date(Date.now() + 60000).toISOString(),
     new Date(Date.now() - 60000).toISOString(),
     provider.id,
   );
+  first.prepare(`
+    UPDATE providers
+       SET request_timeout_ms = 300000,
+           stream_idle_timeout_ms = 120000,
+           stream_progress_timeout_ms = 60000
+     WHERE id = ?
+  `).run(customizedProvider.id);
   first.prepare("DELETE FROM schema_migrations WHERE id = '2026-08-completed-client-disconnect'").run();
+  first.prepare("DELETE FROM schema_migrations WHERE id = '2026-08-phase-aware-stream-timeouts'").run();
   first.close();
 
   const migrated = createDatabase(migrationDirectory);
   const repairedRequest = migrated.prepare("SELECT * FROM requests WHERE id = 'completed-disconnect'").get();
   const repairedAttempt = migrated.prepare("SELECT * FROM request_attempts WHERE id = 'completed-disconnect-attempt'").get();
   const repairedProvider = migrated.prepare("SELECT * FROM providers WHERE id = ?").get(provider.id);
+  const preservedProvider = migrated.prepare("SELECT * FROM providers WHERE id = ?").get(customizedProvider.id);
   assert.equal(repairedRequest.status, "completed");
   assert.equal(repairedRequest.termination_reason, null);
   assert.equal(repairedRequest.last_stream_event, "response.completed");
@@ -134,6 +148,12 @@ test("runs compatibility data migrations only once", () => {
   assert.equal(repairedProvider.consecutive_failures, 0);
   assert.equal(repairedProvider.last_error, null);
   assert.ok(repairedProvider.last_success_at);
+  assert.equal(repairedProvider.request_timeout_ms, 900000);
+  assert.equal(repairedProvider.stream_idle_timeout_ms, 20000);
+  assert.equal(repairedProvider.stream_progress_timeout_ms, 40000);
+  assert.equal(preservedProvider.request_timeout_ms, 300000);
+  assert.equal(preservedProvider.stream_idle_timeout_ms, 120000);
+  assert.equal(preservedProvider.stream_progress_timeout_ms, 60000);
   migrated.prepare(`
     INSERT INTO requests (id, started_at, ended_at, status, requested_model, error_message)
     VALUES ('post-migration', ?, ?, 'cancelled', '', '客户端连接已断开')
@@ -142,7 +162,7 @@ test("runs compatibility data migrations only once", () => {
 
   const reopened = createDatabase(migrationDirectory);
   assert.equal(reopened.prepare("SELECT status FROM requests WHERE id = 'post-migration'").get().status, "cancelled");
-  assert.equal(reopened.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 6);
+  assert.equal(reopened.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 7);
   reopened.close();
   rmSync(migrationDirectory, { recursive: true, force: true });
 });
@@ -256,33 +276,63 @@ test("persists first-token timeout policy and handling mode with safe defaults",
   assert.equal(getRouterSettings(db).api_auth_enabled, true);
 });
 
-test("derives adaptive first-token timeouts from a trimmed provider and model baseline", () => {
+test("derives adaptive first-token timeouts from normal single-attempt P75 samples", () => {
   const provider = saveProvider(db, {
     name: "Adaptive timeout upstream",
     base_url: "http://127.0.0.1:19994/v1",
   });
-  const startedAt = new Date().toISOString();
-  for (const [index, ttft] of [4000, 4500, 5000, 5500, 6000].entries()) {
+  const recentAt = new Date().toISOString();
+  const olderAt = new Date(Date.now() - 2 * 86400000).toISOString();
+  const insertSample = (id, model, ttft, options = {}) => {
     db.prepare(`
       INSERT INTO requests (
-        id, started_at, ended_at, status, requested_model, final_provider_id, ttft_ms
-      ) VALUES (?, ?, ?, 'completed', 'adaptive-model', ?, ?)
-    `).run(`adaptive-${index}`, startedAt, startedAt, provider.id, ttft);
+        id, started_at, ended_at, status, requested_model, final_provider_id, ttft_ms,
+        attempt_count, is_failover, race_triggered
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      options.startedAt ?? recentAt,
+      options.startedAt ?? recentAt,
+      options.status ?? "completed",
+      model,
+      provider.id,
+      ttft,
+      options.attemptCount ?? 1,
+      options.isFailover ?? 0,
+      options.raceTriggered ?? 0,
+    );
+  };
+
+  for (let index = 0; index < 10; index += 1) {
+    insertSample(`adaptive-low-${index}`, "adaptive-low", 4000);
+    insertSample(`adaptive-high-${index}`, "adaptive-high", 20000);
   }
+  for (const [index, ttft] of [4000, 5000, 6000, 7000, 8000, 9000, 10000, 11000, 12000, 13000].entries()) {
+    insertSample(`adaptive-${index}`, "adaptive-model", ttft, { startedAt: index === 0 ? olderAt : recentAt });
+  }
+  insertSample("adaptive-race", "adaptive-model", 600000, { attemptCount: 2 });
+  insertSample("adaptive-race-without-fallback", "adaptive-model", 600000, { raceTriggered: 1 });
+  insertSample("adaptive-failover", "adaptive-model", 600000, { isFailover: 1 });
+  insertSample("adaptive-failed", "adaptive-model", 600000, { status: "failed" });
 
   const adaptive = getAdaptiveFirstTokenTimeout(db, provider.id, "adaptive-model", 30000);
-  assert.equal(adaptive.baseline_ms, 5000);
-  assert.equal(adaptive.timeout_ms, 9000);
-  assert.equal(adaptive.sample_count, 5);
+  assert.equal(adaptive.baseline_ms, 11000);
+  assert.equal(adaptive.baseline_type, "p75");
+  assert.equal(adaptive.timeout_ms, 13000);
+  assert.equal(adaptive.sample_count, 10);
   assert.equal(adaptive.source, "7d");
 
+  assert.equal(getAdaptiveFirstTokenTimeout(db, provider.id, "adaptive-low", 30000).timeout_ms, 8000);
+  assert.equal(getAdaptiveFirstTokenTimeout(db, provider.id, "adaptive-high", 30000).timeout_ms, 15000);
+
   const preview = getAdaptiveFirstTokenTimeoutPreview(db, 30000);
-  assert.equal(preview.timeout_ms, 9000);
+  assert.equal(preview.timeout_ms, 13000);
   assert.equal(preview.provider_id, provider.id);
   assert.equal(preview.requested_model, "adaptive-model");
 
   const fallback = getAdaptiveFirstTokenTimeout(db, provider.id, "missing-model", 28000);
   assert.equal(fallback.baseline_ms, null);
+  assert.equal(fallback.baseline_type, "p75");
   assert.equal(fallback.timeout_ms, 28000);
   assert.equal(fallback.source, "fallback");
 });

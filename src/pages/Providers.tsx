@@ -17,6 +17,8 @@ type ProviderForm = {
   cost_multiplier: number;
   max_concurrency: number;
   request_timeout_ms: number;
+  stream_idle_timeout_ms: number;
+  stream_progress_timeout_ms: number;
   failure_threshold: number;
   cooldown_ms: number;
   headers_text: string;
@@ -32,7 +34,9 @@ const emptyForm: ProviderForm = {
   test_model: DEFAULT_TEST_MODEL,
   cost_multiplier: 1,
   max_concurrency: 8,
-  request_timeout_ms: 300000,
+  request_timeout_ms: 900000,
+  stream_idle_timeout_ms: 20000,
+  stream_progress_timeout_ms: 40000,
   failure_threshold: 3,
   cooldown_ms: 30000,
   headers_text: "{}",
@@ -132,6 +136,8 @@ export function ProvidersPage({
       cost_multiplier: provider.cost_multiplier,
       max_concurrency: provider.max_concurrency,
       request_timeout_ms: provider.request_timeout_ms,
+      stream_idle_timeout_ms: provider.stream_idle_timeout_ms,
+      stream_progress_timeout_ms: provider.stream_progress_timeout_ms,
       failure_threshold: provider.failure_threshold,
       cooldown_ms: provider.cooldown_ms,
       headers_text: prettyJson(provider.headers_json),
@@ -593,9 +599,13 @@ export function ProvidersPage({
                 </button>
               </div>
             </label>
-            <div className="form-grid four-columns">
+            <div className="form-grid three-columns">
+              <label>总安全超时（秒）<input type="number" min="1" value={form.request_timeout_ms / 1000} onChange={(event) => setForm({ ...form, request_timeout_ms: Number(event.target.value) * 1000 })} /></label>
+              <label>首字后无数据超时（秒）<input type="number" min="1" value={form.stream_idle_timeout_ms / 1000} onChange={(event) => setForm({ ...form, stream_idle_timeout_ms: Number(event.target.value) * 1000 })} /></label>
+              <label>首字后无进展超时（秒）<input type="number" min="1" value={form.stream_progress_timeout_ms / 1000} onChange={(event) => setForm({ ...form, stream_progress_timeout_ms: Number(event.target.value) * 1000 })} /></label>
+            </div>
+            <div className="form-grid three-columns">
               <label>最大并发<input type="number" min="1" value={form.max_concurrency} onChange={(event) => setForm({ ...form, max_concurrency: Number(event.target.value) })} /></label>
-              <label>请求超时（秒）<input type="number" min="1" value={form.request_timeout_ms / 1000} onChange={(event) => setForm({ ...form, request_timeout_ms: Number(event.target.value) * 1000 })} /></label>
               <label>失败阈值<input type="number" min="1" value={form.failure_threshold} onChange={(event) => setForm({ ...form, failure_threshold: Number(event.target.value) })} /></label>
               <label>熔断冷却（秒）<input type="number" min="1" value={form.cooldown_ms / 1000} onChange={(event) => setForm({ ...form, cooldown_ms: Number(event.target.value) * 1000 })} /></label>
             </div>

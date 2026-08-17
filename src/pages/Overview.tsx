@@ -190,8 +190,8 @@ export function Overview({
   const adaptivePreview = routerSettings.adaptive_first_token_preview;
   const adaptiveTimeoutSeconds = Number(((adaptivePreview?.timeout_ms ?? routerSettings.first_token_timeout_ms) / 1000).toFixed(1));
   const adaptiveTimeoutTitle = !adaptivePreview || adaptivePreview.source === "fallback"
-    ? "同渠道同模型成功样本不足，当前使用已保存的指定时限"
-    : `基于${adaptivePreview?.source === "24h" ? "近 24 小时" : "近 7 天"}${adaptivePreview?.sample_count ?? 0} 条同渠道同模型成功记录；实际阈值会随渠道和模型变化`;
+    ? "同渠道同模型的正常单次成功样本不足 10 条，当前使用已保存的指定时限"
+    : `基于${adaptivePreview?.source === "24h" ? "近 24 小时" : "近 7 天"}${adaptivePreview?.sample_count ?? 0} 条正常单次成功记录的 P75 + 2 秒，并限制在 8–15 秒；实际阈值会随渠道和模型变化`;
 
   const cancelRequest = async (request: RequestRecord) => {
     setCancellingId(request.id);

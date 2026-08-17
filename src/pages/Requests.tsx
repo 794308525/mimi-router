@@ -266,6 +266,12 @@ function RequestDetail({
         <div><span>路由规则</span><strong>{request.route_rule_name || "-"}</strong></div>
         <div><span>路由组</span><strong>{request.route_group_name || "-"}</strong></div>
         <div><span>最终中转</span><strong>{request.provider_name || "-"}</strong></div>
+        <div><span>切慢首字阈值</span><strong>{formatDuration(request.first_token_timeout_ms)}</strong></div>
+        <div><span>最长数据块间隔</span><strong>{formatDuration(request.max_stream_chunk_idle_ms)}</strong></div>
+        <div><span>最长有效输出间隔</span><strong>{formatDuration(request.max_meaningful_output_idle_ms)}</strong></div>
+        <div><span>流样本</span><strong>{streamSampleLabel(request)}</strong></div>
+        {request.final_output_idle_ms != null && <div><span>异常结束前空闲</span><strong>{formatDuration(request.final_output_idle_ms)}</strong></div>}
+        <div><span>竞速结果</span><strong>{raceResultLabel(request)}</strong></div>
         <div><span>HTTP 状态</span><strong>{request.http_status || "-"}</strong></div>
         <div><span>连接方式</span><strong>{connectionLabel(request.connection_reused)}</strong></div>
         <div><span>网络建连</span><strong>{formatDuration(request.network_connect_ms)}</strong></div>
@@ -303,6 +309,17 @@ function RequestDetail({
 function connectionLabel(reused: number | null | undefined) {
   if (reused == null) return "-";
   return reused ? "复用连接" : "新建连接";
+}
+
+function raceResultLabel(request: RequestRecord) {
+  if (!request.race_triggered) return "未触发";
+  if (request.race_winner_sequence == null) return "未决出胜方";
+  return `第 ${request.race_winner_sequence} 次尝试胜出`;
+}
+
+function streamSampleLabel(request: RequestRecord) {
+  if (request.stream_chunk_count == null && request.meaningful_output_event_count == null) return "-";
+  return `${request.stream_chunk_count ?? 0} 块 / ${request.meaningful_output_event_count ?? 0} 个有效事件`;
 }
 
 function protocolPathLabel(client: string, upstream: string, wrapped: number) {

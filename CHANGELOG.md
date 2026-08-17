@@ -2,6 +2,23 @@
 
 This project follows semantic versioning. Every feature update must keep the application version and both language variants of the release notes in sync.
 
+## 0.2.19 - 2026-08-17
+
+- Streaming requests now use phase-aware timeouts: first-token handling remains unchanged, while streams stop after 20 seconds without upstream data or 40 seconds without meaningful progress, with a 900-second total safety limit.
+- Text, reasoning, tool-argument deltas, and managed-tool work states refresh the progress deadline; SSE heartbeats and comments no longer hide stalled upstream streams.
+- Responses streams stop monitoring immediately after completed, incomplete, or failed terminal events; Chat Completions waits for `[DONE]` so final usage remains available.
+- Post-first-token timeouts no longer switch providers transparently; Responses and Chat clients receive protocol-compatible stream errors while the exact failure and provider health impact are recorded.
+- Provider settings now expose total, post-first-token no-data, and post-first-token no-progress timeouts; only recognized legacy default combinations are migrated once, preserving user-customized values.
+
+## 0.2.18 - 2026-08-17
+
+- Reduced each GitHub Release to six public assets: two macOS installers, two macOS updater archives, the Windows x64 installer, and the updater manifest.
+- Signature files are now used only as temporary workflow inputs while preserving signed online updates for macOS and Windows.
+- Adaptive first-token limits now use the P75 of normal single-attempt successes plus 2 seconds, constrained to 8–15 seconds, while excluding retries, races, and failovers.
+- Same-provider racing now supports client-executed `function` and `custom` tools; managed upstream tools continue to use the safer non-racing path.
+- Request details now record the applied first-token limit, whether racing started, and which attempt won.
+- Stream observations now distinguish the longest upstream chunk gap, the longest meaningful-output gap, and the final idle period before an upstream failure or timeout; normal terminal events stop sampling immediately, and current routing and timeout behavior remains unchanged.
+
 ## 0.2.17 - 2026-08-17
 
 - Added same-provider retries for transient HTTP `408`, `425`, `502`, `503`, `504`, and Cloudflare `520-527` failures.

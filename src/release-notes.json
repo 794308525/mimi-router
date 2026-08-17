@@ -1,6 +1,48 @@
 {
-  "currentVersion": "0.2.17",
+  "currentVersion": "0.2.19",
   "releases": [
+    {
+      "version": "0.2.19",
+      "date": "2026-08-17",
+      "notes": {
+        "zh-CN": [
+          "流式请求改用分阶段超时：首字前继续沿用切慢首字策略，首字后连续 20 秒无上游数据或连续 40 秒无有效进展时终止，总安全上限调整为 900 秒。",
+          "文本、推理、工具参数增量及上游托管工具的工作状态会刷新有效进展时限；SSE 心跳和注释不会掩盖卡死的上游流。",
+          "Responses 收到完成、未完成或失败事件后立即结束监控；Chat Completions 等待 [DONE] 后收尾，保留结束前返回的用量数据。",
+          "首字后的超时不再透明切换渠道，改为向 Responses 或 Chat 客户端返回兼容的流错误，并记录具体失败原因及渠道健康状态。",
+          "渠道设置新增总安全超时、首字后无数据超时和首字后无进展超时；仅已知旧版默认组合会一次性迁移，保留用户自定义值。"
+        ],
+        "en": [
+          "Streaming requests now use phase-aware timeouts: first-token handling remains unchanged, while streams stop after 20 seconds without upstream data or 40 seconds without meaningful progress, with a 900-second total safety limit.",
+          "Text, reasoning, tool-argument deltas, and managed-tool work states refresh the progress deadline; SSE heartbeats and comments no longer hide stalled upstream streams.",
+          "Responses streams stop monitoring immediately after completed, incomplete, or failed terminal events; Chat Completions waits for [DONE] so final usage remains available.",
+          "Post-first-token timeouts no longer switch providers transparently; Responses and Chat clients receive protocol-compatible stream errors while the exact failure and provider health impact are recorded.",
+          "Provider settings now expose total, post-first-token no-data, and post-first-token no-progress timeouts; only recognized legacy default combinations are migrated once, preserving user-customized values."
+        ]
+      }
+    },
+    {
+      "version": "0.2.18",
+      "date": "2026-08-17",
+      "notes": {
+        "zh-CN": [
+          "GitHub Release 精简为 6 个公开资源：两个 macOS 安装包、两个 macOS 升级包、Windows x64 安装包和升级清单。",
+          "签名文件仅在发布工作流内部临时使用，仍保留 macOS 和 Windows 在线安全升级功能。",
+          "自动均衡改用正常单次成功请求的 P75 加 2 秒，并限制在 8–15 秒；重试、竞速和故障转移请求不再污染样本。",
+          "同渠竞速支持由客户端执行的 function 和 custom 工具；上游托管工具仍使用更稳妥的非竞速路径。",
+          "请求详情新增实际切慢首字阈值、是否触发竞速及胜出尝试记录。",
+          "流式观测细分为最长上游数据块间隔、最长有效输出间隔及上游异常或超时前的最终空闲；收到正常结束事件后立即停止采样，当前路由和超时行为保持不变。"
+        ],
+        "en": [
+          "Reduced each GitHub Release to six public assets: two macOS installers, two macOS updater archives, the Windows x64 installer, and the updater manifest.",
+          "Signature files are now used only as temporary workflow inputs while preserving signed online updates for macOS and Windows.",
+          "Adaptive first-token limits now use the P75 of normal single-attempt successes plus 2 seconds, constrained to 8–15 seconds, while excluding retries, races, and failovers.",
+          "Same-provider racing now supports client-executed function and custom tools; managed upstream tools continue to use the safer non-racing path.",
+          "Request details now record the applied first-token limit, whether racing started, and which attempt won.",
+          "Stream observations now distinguish the longest upstream chunk gap, the longest meaningful-output gap, and the final idle period before an upstream failure or timeout; normal terminal events stop sampling immediately, and current routing and timeout behavior remains unchanged."
+        ]
+      }
+    },
     {
       "version": "0.2.17",
       "date": "2026-08-17",

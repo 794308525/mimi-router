@@ -24,6 +24,7 @@ export type Provider = {
   connect_timeout_ms: number;
   request_timeout_ms: number;
   stream_idle_timeout_ms: number;
+  stream_progress_timeout_ms: number;
   max_concurrency: number;
   enabled: boolean;
   health_status: "unknown" | "healthy" | "unhealthy" | "auth_error";
@@ -49,6 +50,7 @@ export type RouterSettings = {
   adaptive_first_token_preview?: {
     timeout_ms: number;
     baseline_ms: number | null;
+    baseline_type: "p75";
     sample_count: number;
     source: "24h" | "7d" | "fallback";
     provider_id: string | null;
@@ -189,6 +191,14 @@ export type RequestRecord = {
   ended_at: string | null;
   duration_ms: number | null;
   ttft_ms: number | null;
+  max_stream_chunk_idle_ms: number | null;
+  max_meaningful_output_idle_ms: number | null;
+  final_output_idle_ms: number | null;
+  stream_chunk_count: number | null;
+  meaningful_output_event_count: number | null;
+  first_token_timeout_ms: number | null;
+  race_triggered: number;
+  race_winner_sequence: number | null;
   status: "received" | "routing" | "connecting" | "streaming" | "completed" | "failed" | "cancelled" | "client_disconnected" | "interrupted";
   requested_model: string;
   upstream_model: string;
