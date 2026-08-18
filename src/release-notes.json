@@ -1,6 +1,56 @@
 {
-  "currentVersion": "0.2.28",
+  "currentVersion": "0.2.32",
   "releases": [
+    {
+      "version": "0.2.32",
+      "date": "2026-08-18",
+      "notes": {
+        "zh-CN": [
+          "修正首页最终中转提示：未重试或同渠道重试时不再显示重复的最终中转。"
+        ],
+        "en": [
+          "Fixed the dashboard final-provider hint so it is hidden for requests without a retry or with same-provider retries."
+        ]
+      }
+    },
+    {
+      "version": "0.2.31",
+      "date": "2026-08-18",
+      "notes": {
+        "zh-CN": [
+          "调大首页和请求记录中的正文、模型渠道及辅助信息字号，提升可读性。"
+        ],
+        "en": [
+          "Increased body, model/provider, and supporting text sizes on the dashboard and request history for better readability."
+        ]
+      }
+    },
+    {
+      "version": "0.2.30",
+      "date": "2026-08-18",
+      "notes": {
+        "zh-CN": [
+          "首页最近使用记录仅在最终中转与首次尝试中转不一致时显示最终中转；同一中转重试不再重复显示渠道名。"
+        ],
+        "en": [
+          "Dashboard recent usage now shows the final provider only when it differs from the first attempt; same-provider retries no longer repeat the provider name."
+        ]
+      }
+    },
+    {
+      "version": "0.2.29",
+      "date": "2026-08-18",
+      "notes": {
+        "zh-CN": [
+          "自动均衡改为按每次上游尝试记录首字耗时，纳入竞速与首字超时样本，并自动回填历史尝试数据。",
+          "自动阈值采样扩大到最多 200 条、至少 20 条，缓存更新改为 5 分钟并限制单次变化幅度；分渠竞速会避开已知不健康的中转。"
+        ],
+        "en": [
+          "Adaptive first-token timing now records each upstream attempt, includes race and first-token-timeout samples, and backfills historical attempt data.",
+          "Adaptive sampling now uses up to 200 samples with a 20-sample minimum, refreshes every five minutes with bounded step changes, and different-provider races avoid known unhealthy providers."
+        ]
+      }
+    },
     {
       "version": "0.2.28",
       "date": "2026-08-18",

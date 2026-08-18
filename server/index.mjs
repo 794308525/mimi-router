@@ -145,6 +145,7 @@ async function handleApi(req, res, url) {
 
   if (req.method === "PUT" && url.pathname === "/api/router-settings") {
     const saved = saveRouterSettings(db, await bodyJson(req));
+    engine.clearFirstTokenTimeoutCache();
     routerAuthEnabled = saved.api_auth_enabled;
     const settings = managementRouterSettings();
     publish("router.settings_changed", { settings });

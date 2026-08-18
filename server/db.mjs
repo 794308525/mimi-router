@@ -156,6 +156,8 @@ export function createDatabase(dataDir) {
       request_upload_ms INTEGER,
       upstream_wait_ms INTEGER,
       first_byte_at TEXT,
+      ttft_ms INTEGER,
+      first_token_timeout_ms INTEGER,
       ended_at TEXT,
       duration_ms INTEGER,
       status TEXT NOT NULL,
@@ -223,6 +225,8 @@ export function createDatabase(dataDir) {
     CREATE INDEX IF NOT EXISTS idx_attempts_request ON request_attempts(request_id, sequence);
     CREATE INDEX IF NOT EXISTS idx_attempts_started_at_provider
       ON request_attempts(started_at DESC, provider_id);
+    CREATE INDEX IF NOT EXISTS idx_attempts_ttft_baseline
+      ON request_attempts(provider_id, started_at DESC);
   `);
 
   ensureColumn(db, "providers", "test_model", "TEXT NOT NULL DEFAULT 'gpt-5.6-terra'");
@@ -261,6 +265,8 @@ export function createDatabase(dataDir) {
   ensureColumn(db, "request_attempts", "network_connect_ms", "INTEGER");
   ensureColumn(db, "request_attempts", "request_upload_ms", "INTEGER");
   ensureColumn(db, "request_attempts", "upstream_wait_ms", "INTEGER");
+  ensureColumn(db, "request_attempts", "ttft_ms", "INTEGER");
+  ensureColumn(db, "request_attempts", "first_token_timeout_ms", "INTEGER");
   ensureColumn(db, "request_attempts", "actual_upstream_model", "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "request_attempts", "upstream_protocol", "TEXT NOT NULL DEFAULT 'responses'");
   ensureColumn(db, "request_attempts", "protocol_wrapped", "INTEGER NOT NULL DEFAULT 0");
@@ -448,6 +454,39 @@ export function createDatabase(dataDir) {
        AND stream_idle_timeout_ms = 30000
        AND stream_progress_timeout_ms = 60000
      );
+  `));
+  runOnce(db, "2026-08-adaptive-attempt-samples", () => db.exec(`
+    UPDATE request_attempts
+       SET ttft_ms = ROUND((julianday(first_byte_at) - julianday(started_at)) * 86400000)
+     WHERE ttft_ms IS NULL AND first_byte_at IS NOT NULL;
+
+    UPDATE request_attempts
+       SET first_token_timeout_ms = (
+         SELECT r.first_token_timeout_ms
+           FROM requests r
+          WHERE r.id = request_attempts.request_id
+       )
+     WHERE first_token_timeout_ms IS NULL
+       AND EXISTS (
+         SELECT 1
+           FROM requests r
+          WHERE r.id = request_attempts.request_id
+            AND r.first_token_timeout_ms IS NOT NULL
+            AND (
+              (r.race_triggered = 0 AND request_attempts.error_category = 'first_token_timeout')
+              OR (
+                r.race_triggered = 1
+                AND request_attempts.sequence = CASE
+                  WHEN r.race_winner_sequence = (
+                    SELECT MAX(candidate.sequence)
+                      FROM request_attempts candidate
+                     WHERE candidate.request_id = r.id
+                  ) THEN r.race_winner_sequence - 1
+                  ELSE r.race_winner_sequence
+                END
+              )
+            )
+       );
   `));
   pruneExpiredDiagnostics(db);
   pruneExpiredRequests(db);
@@ -721,25 +760,44 @@ export function saveRouterSettings(db, input) {
 }
 
 export function getAdaptiveFirstTokenTimeout(db, providerId, requestedModel, fallbackMs = 30000) {
+  const sampleLimit = 200;
+  const minimumSamples = 20;
   const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString();
   const dayAgo = Date.now() - 86400000;
   const samples = db.prepare(`
-    SELECT started_at, ttft_ms
-      FROM requests
-     WHERE final_provider_id = ? AND requested_model = ?
-       AND status = 'completed' AND attempt_count = 1 AND is_failover = 0 AND race_triggered = 0
-       AND ttft_ms IS NOT NULL AND started_at >= ?
-     ORDER BY started_at DESC
-     LIMIT 100
-  `).all(providerId, requestedModel, weekAgo);
+    SELECT a.started_at,
+           CASE
+             WHEN a.ttft_ms IS NOT NULL THEN a.ttft_ms
+             WHEN a.first_token_timeout_ms IS NOT NULL
+               AND (a.error_category = 'first_token_timeout'
+                 OR a.termination_reason IN ('first_token_timeout', 'race_lost'))
+               THEN a.first_token_timeout_ms
+           END AS ttft_ms,
+           CASE WHEN a.ttft_ms IS NULL THEN 1 ELSE 0 END AS censored
+      FROM request_attempts a
+      JOIN requests r ON r.id = a.request_id
+     WHERE a.provider_id = ? AND r.requested_model = ?
+       AND a.started_at >= ?
+       AND (
+         a.ttft_ms IS NOT NULL
+         OR (
+           a.first_token_timeout_ms IS NOT NULL
+           AND (a.error_category = 'first_token_timeout'
+             OR a.termination_reason IN ('first_token_timeout', 'race_lost'))
+         )
+       )
+     ORDER BY a.started_at DESC, a.rowid DESC
+     LIMIT ?
+  `).all(providerId, requestedModel, weekAgo, sampleLimit);
   const recent = samples.filter((sample) => new Date(sample.started_at).getTime() >= dayAgo);
-  const selected = recent.length >= 10 ? recent : samples;
-  if (selected.length < 10) {
+  const selected = recent.length >= minimumSamples ? recent : samples;
+  if (selected.length < minimumSamples) {
     return {
       timeout_ms: Math.min(600000, Math.max(1000, positiveInt(fallbackMs, 30000))),
       baseline_ms: null,
       baseline_type: "p75",
       sample_count: selected.length,
+      censored_sample_count: selected.filter((sample) => sample.censored).length,
       source: "fallback",
     };
   }
@@ -751,19 +809,27 @@ export function getAdaptiveFirstTokenTimeout(db, providerId, requestedModel, fal
     baseline_ms: Math.round(baselineMs),
     baseline_type: "p75",
     sample_count: selected.length,
-    source: recent.length >= 10 ? "24h" : "7d",
+    censored_sample_count: selected.filter((sample) => sample.censored).length,
+    source: recent.length >= minimumSamples ? "24h" : "7d",
   };
 }
 
 export function getAdaptiveFirstTokenTimeoutPreview(db, fallbackMs = 30000) {
   const context = db.prepare(`
-    SELECT r.final_provider_id AS provider_id, r.requested_model, p.name AS provider_name
-      FROM requests r
-      JOIN providers p ON p.id = r.final_provider_id
-     WHERE r.status = 'completed' AND r.final_provider_id IS NOT NULL
-       AND r.attempt_count = 1 AND r.is_failover = 0 AND r.race_triggered = 0
-       AND r.requested_model IS NOT NULL AND r.requested_model != ''
-     ORDER BY r.started_at DESC, r.rowid DESC
+    SELECT a.provider_id, r.requested_model, p.name AS provider_name
+      FROM request_attempts a
+      JOIN requests r ON r.id = a.request_id
+      JOIN providers p ON p.id = a.provider_id
+     WHERE r.requested_model IS NOT NULL AND r.requested_model != ''
+       AND (
+         a.ttft_ms IS NOT NULL
+         OR (
+           a.first_token_timeout_ms IS NOT NULL
+           AND (a.error_category = 'first_token_timeout'
+             OR a.termination_reason IN ('first_token_timeout', 'race_lost'))
+         )
+       )
+     ORDER BY a.started_at DESC, a.rowid DESC
      LIMIT 1
   `).get();
   if (!context) {
@@ -772,6 +838,7 @@ export function getAdaptiveFirstTokenTimeoutPreview(db, fallbackMs = 30000) {
       baseline_ms: null,
       baseline_type: "p75",
       sample_count: 0,
+      censored_sample_count: 0,
       source: "fallback",
       provider_id: null,
       provider_name: null,
@@ -1039,7 +1106,17 @@ export function saveRouteRule(db, input, id = randomUUID()) {
 
 export function listRequests(db, limit = 100) {
   return db.prepare(`
-    SELECT r.*, p.name AS provider_name, rg.name AS route_group_name, rr.name AS route_rule_name
+    SELECT r.*,
+           p.name AS provider_name,
+           rg.name AS route_group_name,
+           rr.name AS route_rule_name,
+           (
+             SELECT a.provider_id
+             FROM request_attempts a
+             WHERE a.request_id = r.id
+             ORDER BY a.sequence ASC
+             LIMIT 1
+           ) AS initial_provider_id
     FROM requests r
     LEFT JOIN providers p ON p.id = r.final_provider_id
     LEFT JOIN route_groups rg ON rg.id = r.route_group_id
@@ -1087,7 +1164,17 @@ export function listRequestPage(db, input = {}) {
   const totalPages = Math.ceil(total / pageSize);
   const page = Math.min(requestedPage, Math.max(totalPages, 1));
   const items = db.prepare(`
-    SELECT r.*, p.name AS provider_name, rg.name AS route_group_name, rr.name AS route_rule_name
+    SELECT r.*,
+           p.name AS provider_name,
+           rg.name AS route_group_name,
+           rr.name AS route_rule_name,
+           (
+             SELECT a.provider_id
+             FROM request_attempts a
+             WHERE a.request_id = r.id
+             ORDER BY a.sequence ASC
+             LIMIT 1
+           ) AS initial_provider_id
     ${from}
     ORDER BY r.started_at DESC LIMIT ? OFFSET ?
   `).all(...values, pageSize, (page - 1) * pageSize);
@@ -1103,7 +1190,17 @@ export function listRequestPage(db, input = {}) {
 
 export function getRequest(db, id) {
   const request = db.prepare(`
-    SELECT r.*, p.name AS provider_name, rg.name AS route_group_name, rr.name AS route_rule_name
+    SELECT r.*,
+           p.name AS provider_name,
+           rg.name AS route_group_name,
+           rr.name AS route_rule_name,
+           (
+             SELECT a.provider_id
+             FROM request_attempts a
+             WHERE a.request_id = r.id
+             ORDER BY a.sequence ASC
+             LIMIT 1
+           ) AS initial_provider_id
     FROM requests r
     LEFT JOIN providers p ON p.id = r.final_provider_id
     LEFT JOIN route_groups rg ON rg.id = r.route_group_id

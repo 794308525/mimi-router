@@ -2,6 +2,23 @@
 
 This project follows semantic versioning. Every feature update must keep the application version and both language variants of the release notes in sync.
 
+## 0.2.32 - 2026-08-18
+
+- Fixed the dashboard final-provider hint so it is hidden for requests without a retry or with same-provider retries.
+
+## 0.2.31 - 2026-08-18
+
+- Increased body, model/provider, and supporting text sizes on the dashboard and request history for better readability.
+
+## 0.2.30 - 2026-08-18
+
+- Dashboard recent usage now shows the final provider only when it differs from the first attempt; same-provider retries no longer repeat the provider name.
+
+## 0.2.29 - 2026-08-18
+
+- Adaptive first-token timing now records each upstream attempt, includes race and first-token-timeout samples, and backfills historical attempt data.
+- Adaptive sampling now uses up to 200 samples with a 20-sample minimum, refreshes every five minutes with bounded step changes, and different-provider races avoid known unhealthy providers.
+
 ## 0.2.28 - 2026-08-18
 
 - Request detail dialogs can now be closed by clicking the surrounding backdrop without changing confirmation-dialog behavior.

@@ -236,6 +236,7 @@ export type RequestRecord = {
   provider_name: string | null;
   route_group_name: string | null;
   route_rule_name: string | null;
+  initial_provider_id: string | null;
   attempts?: RequestAttempt[];
 };
 

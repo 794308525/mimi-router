@@ -674,7 +674,7 @@ input:disabled, select:disabled { background: #edf0f1; }
 .overview-trend-panel { padding: 16px 18px; border: 0; border-radius: 10px; background: #fff; overflow: visible; }
 .overview-page .overview-trend-panel .section-heading { min-height: 40px; padding: 0 0 10px; border-bottom: 0; }
 .overview-page .section-heading h2, .overview-page .table-title h2 { font-size: 16px; font-weight: 600; }
-.overview-page .section-heading p, .overview-page .table-title p { margin-top: 5px; font-size: 11px; line-height: 1.45; }
+.overview-page .section-heading p, .overview-page .table-title p { margin-top: 5px; font-size: 12px; line-height: 1.45; }
 .trend-plot { padding: 5px 0 0; }
 .trend-axis-label { font-size: 11px; }
 .trend-range-tabs button { font-size: 11px; }
@@ -693,21 +693,25 @@ input:disabled, select:disabled { background: #edf0f1; }
 .overview-page .providers-panel .section-heading { flex: none; }
 .overview-page .provider-health-list { min-height: 0; max-height: none; padding-top: 2px; flex: 1; border-bottom: 0; overflow-y: auto; }
 .overview-page .provider-health-row { min-height: 66px; grid-template-columns: 28px minmax(0, 1fr) auto; }
-.overview-page .provider-health-name small { font-size: 11px; }
-.overview-page .provider-health-name em { margin-top: 5px; font-size: 11px; }
+.overview-page .provider-health-name small { font-size: 12px; }
+.overview-page .provider-health-name em { margin-top: 5px; font-size: 12px; }
 .overview-page .provider-health-row.names-hidden .provider-health-name em { margin-top: 0; }
 .overview-page .provider-health-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px 10px; white-space: normal; }
 .overview-page .provider-health-metrics span { color: var(--faint); white-space: nowrap; }
 .overview-page .provider-health-metrics b { color: #527466; font-weight: 650; }
 .overview-usage-table { margin-top: 30px; }
 .overview-usage-table .home-table-title { min-height: 62px; padding-top: 8px; padding-bottom: 12px; }
-.overview-usage-table th { height: 40px; font-size: 11px; }
-.overview-usage-table td { height: 58px; font-size: 12px; }
-.usage-record-link strong { font-size: 12px; }
-.usage-record-link small, .timing-cell small { font-size: 11px; }
+.overview-usage-table th { height: 40px; font-size: 12px; }
+.overview-usage-table td { height: 58px; font-size: 13px; }
+.usage-record-link strong { font-size: 13px; }
+.usage-record-link small,
+.usage-record-link .model-runtime-meta,
+.usage-record-link .record-routing-meta,
+.timing-cell small,
+.overview-usage-table .token-stack { font-size: 12px; }
 .quick-facts { margin-top: 22px; }
-.quick-facts span { font-size: 11px; }
-.quick-facts strong { font-size: 12px; font-weight: 600; }
+.quick-facts span { font-size: 12px; }
+.quick-facts strong { font-size: 13px; font-weight: 600; }
 .overview-page .overview-usage-table { padding: 0 16px 12px; border: 0; border-radius: 10px; background: #fff; }
 .overview-page .quick-facts { gap: 12px; background: transparent; overflow: visible; }
 .overview-page .quick-facts div { border-radius: 9px; background: #fff; }
@@ -717,8 +721,8 @@ input:disabled, select:disabled { background: #edf0f1; }
 .page:not(.overview-page) .page-header { min-height: 40px; margin-bottom: 20px; align-items: center; }
 .page:not(.overview-page) .page-header h1 { margin: 0; font-size: 24px; font-weight: 650; }
 .page:not(.overview-page) .table-shell { border: 0; border-radius: 10px; background: #fff; }
-.page:not(.overview-page) table th { height: 40px; padding-right: 12px; padding-left: 12px; background: #fbfcfc; font-size: 11px; font-weight: 550; letter-spacing: .025em; text-transform: none; }
-.page:not(.overview-page) table td { height: 58px; padding-right: 12px; padding-left: 12px; }
+.page:not(.overview-page) table th { height: 40px; padding-right: 12px; padding-left: 12px; background: #fbfcfc; font-size: 12px; font-weight: 550; letter-spacing: .025em; text-transform: none; }
+.page:not(.overview-page) table td { height: 58px; padding-right: 12px; padding-left: 12px; font-size: 13px; }
 .page:not(.overview-page) .filters-bar { min-height: 56px; margin-bottom: 16px; padding: 9px 12px; border: 0; border-radius: 10px; }
 .page:not(.overview-page) .section-heading { min-height: 44px; padding: 0 2px 11px; border-bottom: 0; }
 .page:not(.overview-page) .section-heading h2, .page:not(.overview-page) .table-title h2 { font-size: 16px; font-weight: 600; }

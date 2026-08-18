@@ -737,6 +737,10 @@ test("races one different channel after a first-token timeout", async () => {
     ["Slow first token", "Fast fallback"],
   );
   assert.equal(detail.attempts[0].error_category, "race_lost");
+  assert.equal(detail.attempts[0].first_token_timeout_ms, 50);
+  assert.equal(detail.attempts[0].ttft_ms, null);
+  assert.equal(detail.attempts[1].first_token_timeout_ms, null);
+  assert.ok(detail.attempts[1].ttft_ms > 0);
   assert.equal(detail.attempts[1].status, "completed");
 });
 

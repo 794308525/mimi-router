@@ -84,6 +84,8 @@ const HOP_BY_HOP_HEADERS = new Set([
   "transfer-encoding",
   "upgrade",
 ]);
+const ADAPTIVE_TIMEOUT_CACHE_TTL_MS = 5 * 60 * 1000;
+const ADAPTIVE_TIMEOUT_MAX_STEP_MS = 2000;
 
 function abortError(code, message) {
   const error = new Error(message);
@@ -176,6 +178,10 @@ export class RouterEngine {
     this.streamSamples = new Map();
     this.streamSequenceNumbers = new Map();
     this.circuitWaiters = new Map();
+  }
+
+  clearFirstTokenTimeoutCache() {
+    this.firstTokenTimeoutCache.clear();
   }
 
   async handle(req, res, { upstreamEndpoint = "responses", clientProtocol = "responses" } = {}) {
@@ -537,6 +543,7 @@ export class RouterEngine {
           : 0;
         if (firstTokenTimeoutMs > 0) {
           this.updateRequest(requestId, { first_token_timeout_ms: firstTokenTimeoutMs });
+          this.updateAttempt(attemptId, { first_token_timeout_ms: firstTokenTimeoutMs });
         }
         const forwardContext = {
           requestId,
@@ -570,7 +577,7 @@ export class RouterEngine {
             startRaceAttempt: async () => {
               const raceSelection = firstTokenTimeoutMode === "race_same"
                 ? (this.providerAvailable(provider) ? this.claimSelection(provider) : null)
-                : this.selectProvider(route, body, attempted);
+              : this.selectProvider(route, body, attempted, { excludeUnhealthy: true });
               if (!raceSelection) return null;
               attempted.add(raceSelection.provider.id);
               maxAttempts += 1;
@@ -856,6 +863,7 @@ export class RouterEngine {
       }),
       onMeaningfulOutput: () => this.noteMeaningfulStreamOutput(requestId),
       onTerminal: () => this.noteStreamTerminal(requestId),
+      onFirstOutput: () => this.recordAttemptFirstOutput(attemptId, attemptMono),
     });
     startRaceCandidatePump(original);
 
@@ -903,6 +911,7 @@ export class RouterEngine {
         }),
         onMeaningfulOutput: () => this.noteMeaningfulStreamOutput(requestId),
         onTerminal: () => this.noteStreamTerminal(requestId),
+        onFirstOutput: () => this.recordAttemptFirstOutput(fallback.attemptId, fallback.attemptMono),
       });
       startRaceCandidatePump(fallbackCandidate);
     } else if (fallback?.ok) {
@@ -1113,13 +1122,11 @@ export class RouterEngine {
     if (isTerminalStreamPayload(candidate.lastStreamEvent)) {
       this.noteStreamTerminal(requestId);
     }
-    const firstByteAt = new Date();
+    const { firstByteAt } = this.recordAttemptFirstOutput(candidate.attemptId, candidate.attemptMono);
     const ttft = Math.max(0, Math.round(performance.now() - requestStartedMono));
-    this.db.prepare("UPDATE request_attempts SET first_byte_at = ? WHERE id = ?")
-      .run(firstByteAt.toISOString(), candidate.attemptId);
     this.updateRequest(requestId, {
       status: "streaming",
-      first_byte_at: firstByteAt.toISOString(),
+      first_byte_at: firstByteAt,
       ttft_ms: ttft,
       http_status: candidate.upstream.status,
       final_provider_id: candidate.provider.id,
@@ -1193,13 +1200,11 @@ export class RouterEngine {
     const markFirstOutput = () => {
       if (firstOutputRecorded) return;
       firstOutputRecorded = true;
-      const firstByteAt = new Date();
+      const { firstByteAt } = this.recordAttemptFirstOutput(attemptId, attemptMono);
       const ttft = Math.max(0, Math.round(performance.now() - requestStartedMono));
-      this.db.prepare("UPDATE request_attempts SET first_byte_at = ? WHERE id = ?")
-        .run(firstByteAt.toISOString(), attemptId);
       this.updateRequest(requestId, {
         status: isStream ? "streaming" : "connecting",
-        first_byte_at: firstByteAt.toISOString(),
+        first_byte_at: firstByteAt,
         ttft_ms: ttft,
         http_status: upstream.status,
         stream_phase: "streaming",
@@ -1421,13 +1426,11 @@ export class RouterEngine {
     const markFirstOutput = () => {
       if (firstOutputRecorded) return;
       firstOutputRecorded = true;
-      const firstByteAt = new Date();
+      const { firstByteAt } = this.recordAttemptFirstOutput(attemptId, attemptMono);
       const ttft = Math.max(0, Math.round(performance.now() - requestStartedMono));
-      this.db.prepare("UPDATE request_attempts SET first_byte_at = ? WHERE id = ?")
-        .run(firstByteAt.toISOString(), attemptId);
       this.updateRequest(requestId, {
         status: isStream ? "streaming" : "connecting",
-        first_byte_at: firstByteAt.toISOString(),
+        first_byte_at: firstByteAt,
         ttft_ms: ttft,
         http_status: upstream.status,
         stream_phase: "streaming",
@@ -1697,11 +1700,12 @@ export class RouterEngine {
     return group ? { rule, group } : null;
   }
 
-  selectProvider(route, body, attempted) {
+  selectProvider(route, body, attempted, options = {}) {
+    const { excludeUnhealthy = false } = options;
     const candidates = route.group.members
       .filter((member) => member.enabled && member.provider_enabled && !attempted.has(member.provider_id))
       .map((member) => ({ member, provider: getProvider(this.db, member.provider_id) }))
-      .filter(({ provider }) => provider && this.providerAvailable(provider));
+      .filter(({ provider }) => provider && this.providerAvailable(provider, { excludeUnhealthy }));
 
     if (candidates.length === 0) return null;
     const stickyId = route.group.sticky_enabled ? this.stickyProvider(body.previous_response_id) : null;
@@ -1805,8 +1809,9 @@ export class RouterEngine {
     return { provider, probe };
   }
 
-  providerAvailable(provider) {
+  providerAvailable(provider, { excludeUnhealthy = false } = {}) {
     if (!provider.enabled || provider.health_status === "auth_error") return false;
+    if (excludeUnhealthy && provider.health_status === "unhealthy") return false;
     if ((this.inFlight.get(provider.id) ?? 0) >= provider.max_concurrency) return false;
     if (provider.circuit_state === "closed") return true;
     if (provider.circuit_state === "half_open") return !this.halfOpenProbes.has(provider.id);
@@ -1836,24 +1841,21 @@ export class RouterEngine {
       requestedModel,
       settings.first_token_timeout_ms,
     );
+    const previous = cached?.timeoutMs;
+    const timeoutMs = Number.isFinite(previous) && adaptive.source !== "fallback"
+      ? Math.min(
+        previous + ADAPTIVE_TIMEOUT_MAX_STEP_MS,
+        Math.max(previous - ADAPTIVE_TIMEOUT_MAX_STEP_MS, adaptive.timeout_ms),
+      )
+      : adaptive.timeout_ms;
     if (this.firstTokenTimeoutCache.size >= 256) {
       this.firstTokenTimeoutCache.delete(this.firstTokenTimeoutCache.keys().next().value);
     }
     this.firstTokenTimeoutCache.set(cacheKey, {
-      timeoutMs: adaptive.timeout_ms,
-      expiresAt: Date.now() + 60000,
+      timeoutMs,
+      expiresAt: Date.now() + ADAPTIVE_TIMEOUT_CACHE_TTL_MS,
     });
-    return adaptive.timeout_ms;
-  }
-
-  invalidateFirstTokenTimeoutCache(request) {
-    if (request?.status !== "completed" || request.attempt_count !== 1 || request.is_failover !== 0
-      || request.race_triggered !== 0 || request.ttft_ms == null || !request.final_provider_id
-      || !request.requested_model) return;
-    const prefix = `${request.final_provider_id}\u0000${request.requested_model}\u0000`;
-    for (const cacheKey of this.firstTokenTimeoutCache.keys()) {
-      if (cacheKey.startsWith(prefix)) this.firstTokenTimeoutCache.delete(cacheKey);
-    }
+    return timeoutMs;
   }
 
   acquireProvider(providerId) {
@@ -2092,7 +2094,8 @@ export class RouterEngine {
   updateAttempt(id, fields) {
     const allowed = [
       "headers_at", "headers_ms", "connection_reused", "network_connect_ms", "request_upload_ms",
-      "upstream_wait_ms", "ended_at", "duration_ms", "status", "http_status", "error_category", "error_message",
+      "upstream_wait_ms", "first_byte_at", "ttft_ms", "first_token_timeout_ms",
+      "ended_at", "duration_ms", "status", "http_status", "error_category", "error_message",
       "input_tokens", "output_tokens", "cached_tokens", "cache_creation_tokens", "reasoning_tokens",
       "input_cost_usd", "cached_input_cost_usd", "cache_creation_cost_usd", "output_cost_usd", "total_cost_usd",
       "pricing_model", "pricing_source", "termination_reason", "stream_phase", "last_stream_event",
@@ -2103,6 +2106,22 @@ export class RouterEngine {
     if (entries.length === 0) return;
     this.db.prepare(`UPDATE request_attempts SET ${entries.map(([key]) => `${key} = ?`).join(", ")} WHERE id = ?`)
       .run(...entries.map(([, value]) => value), id);
+  }
+
+  recordAttemptFirstOutput(attemptId, attemptMono) {
+    const existing = this.db.prepare(
+      "SELECT first_byte_at, ttft_ms FROM request_attempts WHERE id = ?",
+    ).get(attemptId);
+    if (existing?.first_byte_at && existing.ttft_ms != null) {
+      return { firstByteAt: existing.first_byte_at, ttftMs: existing.ttft_ms };
+    }
+    const firstByteAt = new Date().toISOString();
+    const ttftMs = Math.max(0, Math.round(performance.now() - attemptMono));
+    this.updateAttempt(attemptId, {
+      first_byte_at: firstByteAt,
+      ttft_ms: ttftMs,
+    });
+    return { firstByteAt, ttftMs };
   }
 
   attemptNetworkTiming(attemptId) {
@@ -2301,7 +2320,6 @@ export class RouterEngine {
       ...fields,
     });
     const request = getRequest(this.db, id);
-    this.invalidateFirstTokenTimeoutCache(request);
     this.publish("request.finished", { request });
   }
 
@@ -2788,6 +2806,7 @@ function createRaceCandidate({
   onPayload,
   onMeaningfulOutput,
   onTerminal,
+  onFirstOutput,
 }) {
   const reader = upstream.body?.getReader();
   const candidate = {
@@ -2836,6 +2855,7 @@ function createRaceCandidate({
       if (candidate.samplingEnabled) onTerminal?.();
     }
     if (!candidate.semanticFailure && isMeaningfulStreamOutput(payload)) {
+      if (!candidate.firstOutputRecorded) onFirstOutput?.();
       candidate.firstOutputRecorded = true;
     }
   });

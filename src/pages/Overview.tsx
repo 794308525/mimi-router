@@ -245,7 +245,7 @@ export function Overview({
   const adaptiveTimeoutSeconds = Number(((adaptivePreview?.timeout_ms ?? routerSettings.first_token_timeout_ms) / 1000).toFixed(1));
   const adaptiveTimeoutTitle = !adaptivePreview || adaptivePreview.source === "fallback"
     ? "同渠道同模型的正常单次成功样本不足 10 条，当前使用已保存的指定时限"
-    : `基于${adaptivePreview?.source === "24h" ? "近 24 小时" : "近 7 天"}${adaptivePreview?.sample_count ?? 0} 条正常单次成功记录的 P75 + 2 秒，并限制在 8–15 秒；实际阈值会随渠道和模型变化`;
+    : `基于${adaptivePreview?.source === "24h" ? "近 24 小时" : "近 7 天"}${adaptivePreview?.sample_count ?? 0} 条上游尝试样本的 P75 + 2 秒，并限制在 8–15 秒；包含超时和竞速样本，实际阈值会随渠道和模型变化`;
 
   const cancelRequest = async (request: RequestRecord) => {
     setCancellingId(request.id);
@@ -707,9 +707,10 @@ export function Overview({
                   <td>
                     <button className="usage-record-link" type="button" onClick={() => onOpenRequest(request)}>
                       <ModelRuntime requestedModel={request.requested_model} actualModel={request.actual_upstream_model} reasoningEffort={request.reasoning_effort} providerName={providerNamesVisible ? request.provider_name : null} />
-                      <small className="record-routing-meta">
-                        {request.attempt_count > 1 && <>尝试 {request.attempt_count} 次 · </>}最终 {providerNamesVisible ? (request.provider_name || "未选择") : "渠道已隐藏"}
-                      </small>
+                      {(() => {
+                        const routingMeta = requestRoutingMeta(request, providerNamesVisible);
+                        return routingMeta ? <small className="record-routing-meta">{routingMeta}</small> : null;
+                      })()}
                     </button>
                   </td>
                   <td><TokenStack input={request.input_tokens} cached={request.cached_tokens} output={request.output_tokens} /></td>
@@ -776,6 +777,19 @@ export function Overview({
       )}
     </div>
   );
+}
+
+function requestRoutingMeta(request: RequestRecord, providerNamesVisible: boolean) {
+  const parts: string[] = [];
+  if (request.attempt_count > 1) parts.push(`尝试 ${request.attempt_count} 次`);
+  const finalProviderChanged = request.attempt_count > 1
+    && request.initial_provider_id != null
+    && request.final_provider_id != null
+    && request.final_provider_id !== request.initial_provider_id;
+  if (finalProviderChanged) {
+    parts.push(`最终 ${providerNamesVisible ? (request.provider_name || "未选择") : "渠道已隐藏"}`);
+  }
+  return parts.join(" · ");
 }
 
 function networkTimingTitle(request: RequestRecord) {

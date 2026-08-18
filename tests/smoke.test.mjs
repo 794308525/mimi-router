@@ -81,7 +81,7 @@ test("compacts detailed diagnostics after three days without deleting request su
 test("runs compatibility data migrations only once", () => {
   const migrationDirectory = mkdtempSync(join(tmpdir(), "codex-router-migration-test-"));
   const first = createDatabase(migrationDirectory);
-  assert.equal(first.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 7);
+  assert.equal(first.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 8);
   const provider = saveProvider(first, {
     name: "Migration upstream",
     base_url: "http://127.0.0.1:19996/v1",
@@ -163,7 +163,7 @@ test("runs compatibility data migrations only once", () => {
 
   const reopened = createDatabase(migrationDirectory);
   assert.equal(reopened.prepare("SELECT status FROM requests WHERE id = 'post-migration'").get().status, "cancelled");
-  assert.equal(reopened.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 7);
+  assert.equal(reopened.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 8);
   reopened.close();
   rmSync(migrationDirectory, { recursive: true, force: true });
 });
@@ -277,7 +277,7 @@ test("persists first-token timeout policy and handling mode with safe defaults",
   assert.equal(getRouterSettings(db).api_auth_enabled, true);
 });
 
-test("derives adaptive first-token timeouts from normal single-attempt P75 samples", () => {
+test("derives adaptive first-token timeouts from upstream attempt P75 samples", () => {
   const provider = saveProvider(db, {
     name: "Adaptive timeout upstream",
     base_url: "http://127.0.0.1:19994/v1",
@@ -285,6 +285,7 @@ test("derives adaptive first-token timeouts from normal single-attempt P75 sampl
   const recentAt = new Date().toISOString();
   const olderAt = new Date(Date.now() - 2 * 86400000).toISOString();
   const insertSample = (id, model, ttft, options = {}) => {
+    const attemptId = `${id}-attempt`;
     db.prepare(`
       INSERT INTO requests (
         id, started_at, ended_at, status, requested_model, final_provider_id, ttft_ms,
@@ -302,25 +303,53 @@ test("derives adaptive first-token timeouts from normal single-attempt P75 sampl
       options.isFailover ?? 0,
       options.raceTriggered ?? 0,
     );
+    db.prepare(`
+      INSERT INTO request_attempts (
+        id, request_id, sequence, provider_id, started_at, ended_at, status,
+        ttft_ms, first_token_timeout_ms, error_category, termination_reason
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      attemptId,
+      id,
+      1,
+      provider.id,
+      options.startedAt ?? recentAt,
+      options.startedAt ?? recentAt,
+      options.attemptStatus ?? "completed",
+      Object.prototype.hasOwnProperty.call(options, "attemptTtftMs")
+        ? options.attemptTtftMs
+        : (options.raceTriggered ? null : ttft),
+      options.attemptTimeoutMs ?? null,
+      options.attemptErrorCategory ?? null,
+      options.attemptTerminationReason ?? null,
+    );
   };
 
-  for (let index = 0; index < 10; index += 1) {
+  for (let index = 0; index < 20; index += 1) {
     insertSample(`adaptive-low-${index}`, "adaptive-low", 4000);
     insertSample(`adaptive-high-${index}`, "adaptive-high", 20000);
   }
-  for (const [index, ttft] of [4000, 5000, 6000, 7000, 8000, 9000, 10000, 11000, 12000, 13000].entries()) {
-    insertSample(`adaptive-${index}`, "adaptive-model", ttft, { startedAt: index === 0 ? olderAt : recentAt });
+  for (const [index, ttft] of [...Array(2)].flatMap(() => [4000, 5000, 6000, 7000, 8000, 9000, 10000, 11000, 12000, 13000]).entries()) {
+    insertSample(`adaptive-${index}`, "adaptive-model", ttft, { startedAt: olderAt });
   }
-  insertSample("adaptive-race", "adaptive-model", 600000, { attemptCount: 2 });
-  insertSample("adaptive-race-without-fallback", "adaptive-model", 600000, { raceTriggered: 1 });
-  insertSample("adaptive-failover", "adaptive-model", 600000, { isFailover: 1 });
-  insertSample("adaptive-failed", "adaptive-model", 600000, { status: "failed" });
+  insertSample("adaptive-retry", "adaptive-model", 600000, { attemptCount: 2, attemptTtftMs: null });
+  insertSample("adaptive-race", "adaptive-model", 600000, {
+    raceTriggered: 1,
+    attemptTtftMs: null,
+    attemptTimeoutMs: 12000,
+    attemptErrorCategory: "race_lost",
+    attemptTerminationReason: "race_lost",
+    attemptStatus: "cancelled",
+  });
+  insertSample("adaptive-failover", "adaptive-model", 600000, { isFailover: 1, attemptTtftMs: null });
+  insertSample("adaptive-failed", "adaptive-model", 600000, { status: "failed", attemptTtftMs: null });
 
   const adaptive = getAdaptiveFirstTokenTimeout(db, provider.id, "adaptive-model", 30000);
   assert.equal(adaptive.baseline_ms, 11000);
   assert.equal(adaptive.baseline_type, "p75");
   assert.equal(adaptive.timeout_ms, 13000);
-  assert.equal(adaptive.sample_count, 10);
+  assert.equal(adaptive.sample_count, 21);
+  assert.equal(adaptive.censored_sample_count, 1);
   assert.equal(adaptive.source, "7d");
 
   assert.equal(getAdaptiveFirstTokenTimeout(db, provider.id, "adaptive-low", 30000).timeout_ms, 8000);
@@ -338,34 +367,23 @@ test("derives adaptive first-token timeouts from normal single-attempt P75 sampl
   assert.equal(fallback.source, "fallback");
 });
 
-test("invalidates the adaptive first-token cache when a new eligible sample completes", () => {
+test("clears the adaptive first-token cache when settings change", () => {
   const provider = saveProvider(db, {
     name: "Adaptive cache upstream",
     base_url: "http://127.0.0.1:19992/v1",
   });
-  const requestId = "adaptive-cache-sample";
   const requestedModel = "adaptive-cache-model";
-  const startedAt = new Date().toISOString();
-  db.prepare(`
-    INSERT INTO requests (
-      id, started_at, status, requested_model, final_provider_id, ttft_ms,
-      attempt_count, is_failover, race_triggered
-    ) VALUES (?, ?, 'streaming', ?, ?, 4200, 1, 0, 0)
-  `).run(requestId, startedAt, requestedModel, provider.id);
 
-  const events = [];
-  const engine = new RouterEngine(db, directory, (type, payload) => events.push({ type, payload }));
+  const engine = new RouterEngine(db, directory, () => {});
   const affectedKey = `${provider.id}\u0000${requestedModel}\u000030000`;
   const unrelatedKey = `${provider.id}\u0000other-model\u000030000`;
   engine.firstTokenTimeoutCache.set(affectedKey, { timeoutMs: 10000, expiresAt: Date.now() + 60000 });
   engine.firstTokenTimeoutCache.set(unrelatedKey, { timeoutMs: 10000, expiresAt: Date.now() + 60000 });
 
-  engine.finishRequest(requestId, performance.now(), { status: "completed" });
+  engine.clearFirstTokenTimeoutCache();
 
   assert.equal(engine.firstTokenTimeoutCache.has(affectedKey), false);
-  assert.equal(engine.firstTokenTimeoutCache.has(unrelatedKey), true);
-  assert.equal(events.at(-1)?.type, "request.finished");
-  assert.equal(events.at(-1)?.payload.request.status, "completed");
+  assert.equal(engine.firstTokenTimeoutCache.has(unrelatedKey), false);
 });
 
 test("aggregates cache hit rates from known usage with an input-weighted denominator", () => {
