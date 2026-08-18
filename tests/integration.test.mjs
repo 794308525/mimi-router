@@ -111,6 +111,69 @@ test("records immediately, fails over, streams unchanged, and captures usage", a
   assert.ok(Number.isInteger(detail.attempts[1].upstream_wait_ms));
 });
 
+test("blocks only the rawchat conversation and keeps the provider healthy", async () => {
+  const rawchat = await post("/api/providers", {
+    name: "Rawchat conversation block",
+    base_url: `http://127.0.0.1:${mockPort}/rawchat-block/v1`,
+    default_model: "mock-model",
+  });
+  const secondary = (await get("/api/providers")).find((provider) => provider.name === "Secondary success");
+  const routes = await get("/api/routes");
+  const group = routes.groups[0];
+  const originalMembers = group.members;
+  try {
+    await put(`/api/route-groups/${group.id}`, {
+      ...group,
+      max_attempts: 3,
+      members: [
+        { provider_id: rawchat.id, priority: 1, weight: 100, enabled: true },
+        { provider_id: secondary.id, priority: 2, weight: 100, enabled: true },
+      ],
+    });
+
+    const request = (conversation, useHeader = true) => fetch(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...(useHeader ? { "thread-id": conversation } : {}) },
+      body: JSON.stringify({ model: "default", input: "hello", stream: false, ...(useHeader ? {} : { conversation }) }),
+    });
+
+    const firstResponse = await request("blocked-session");
+    assert.equal(firstResponse.status, 200);
+    const firstRequest = (await get("/api/requests?limit=1"))[0];
+    assert.equal(firstRequest.status, "completed");
+    assert.equal(firstRequest.conversation_id, "blocked-session");
+    assert.equal(firstRequest.conversation_blocked, 1);
+    assert.equal(firstRequest.attempt_count, 2);
+    assert.equal(firstRequest.initial_provider_name, "Rawchat conversation block");
+    assert.equal(firstRequest.provider_name, "Secondary success");
+    const firstDetail = await get(`/api/requests/${firstRequest.id}`);
+    assert.equal(firstDetail.attempts[0].error_category, "conversation_blocked");
+
+    const rawchatAfter = (await get("/api/providers")).find((provider) => provider.id === rawchat.id);
+    assert.equal(rawchatAfter.circuit_state, "closed");
+    assert.notEqual(rawchatAfter.health_status, "auth_error");
+
+    const secondResponse = await request("blocked-session");
+    assert.equal(secondResponse.status, 200);
+    const secondRequest = (await get("/api/requests?limit=1"))[0];
+    assert.equal(secondRequest.conversation_blocked, 1);
+    assert.equal(secondRequest.attempt_count, 1);
+    const secondDetail = await get(`/api/requests/${secondRequest.id}`);
+    assert.equal(secondDetail.attempts[0].provider_id, secondary.id);
+
+    const otherResponse = await request("other-session", false);
+    assert.equal(otherResponse.status, 200);
+    const otherRequest = (await get("/api/requests?limit=1"))[0];
+    assert.equal(otherRequest.conversation_blocked, 0);
+    assert.equal(otherRequest.attempt_count, 1);
+    const otherDetail = await get(`/api/requests/${otherRequest.id}`);
+    assert.equal(otherDetail.attempts[0].provider_id, rawchat.id);
+  } finally {
+    await put(`/api/route-groups/${group.id}`, { ...group, members: originalMembers });
+    await send("DELETE", `/api/providers/${rawchat.id}`, {});
+  }
+});
+
 test("reports storage usage and truncates only the SQLite cache", async () => {
   const requestsBefore = await get("/api/requests?limit=100");
   const storageBefore = await get("/api/storage");
@@ -742,6 +805,48 @@ test("races one different channel after a first-token timeout", async () => {
   assert.equal(detail.attempts[1].first_token_timeout_ms, null);
   assert.ok(detail.attempts[1].ttft_ms > 0);
   assert.equal(detail.attempts[1].status, "completed");
+});
+
+test("does not mark a different-provider race when no alternate provider is available", async () => {
+  const slow = await post("/api/providers", {
+    name: "Slow race without fallback",
+    base_url: `http://127.0.0.1:${mockPort}/slow/v1`,
+    default_model: "mock-model",
+  });
+  const routes = await get("/api/routes");
+  const group = routes.groups[0];
+  const originalMembers = group.members;
+  await put(`/api/route-groups/${group.id}`, {
+    ...group,
+    max_attempts: 2,
+    members: [{ provider_id: slow.id, priority: 1, weight: 100, enabled: true }],
+  });
+
+  try {
+    await put("/api/router-settings", {
+      first_token_timeout_policy: "fixed",
+      first_token_timeout_ms: 50,
+      first_token_timeout_mode: "race_different",
+    });
+    const response = await fetch(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.6-sol", input: "no fallback", stream: true }),
+    });
+    assert.equal(response.status, 200);
+    assert.match(await response.text(), /response\.output_text\.delta/);
+
+    const completed = (await get("/api/requests?limit=10"))[0];
+    const detail = await get(`/api/requests/${completed.id}`);
+    assert.equal(detail.status, "completed");
+    assert.equal(detail.attempt_count, 1);
+    assert.equal(detail.race_triggered, 0);
+    assert.equal(detail.race_winner_sequence, null);
+    assert.deepEqual(detail.attempts.map((attempt) => attempt.provider_name), ["Slow race without fallback"]);
+  } finally {
+    await put(`/api/route-groups/${group.id}`, { ...group, members: originalMembers });
+    await send("DELETE", `/api/providers/${slow.id}`, {});
+  }
 });
 
 test("races a second request on the same channel without marking failover", async () => {

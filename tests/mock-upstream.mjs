@@ -279,6 +279,13 @@ const server = createServer((req, res) => {
     }
     if (req.url?.includes("/hang/")) return;
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    if (req.url?.includes("/rawchat-block/")) {
+      if (body.conversation === "blocked-session" || req.headers["thread-id"] === "blocked-session") {
+        res.writeHead(403, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { message: "This request was blocked because it contains restricted safety-sensitive content." } }));
+        return;
+      }
+    }
     const actualModel = `${body.model || "mock-model"}-actual`;
     if (req.url?.includes("/idle-sample/") && body.stream) {
       res.writeHead(200, { "content-type": "text/event-stream" });

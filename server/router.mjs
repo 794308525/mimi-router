@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { getAdaptiveFirstTokenTimeout, getProvider, getRequest, getRouterSettings, listRoutes, publicProvider, resolveModelPricing } from "./db.mjs";
+import { createHash, randomUUID } from "node:crypto";
+import { getAdaptiveFirstTokenTimeout, getProvider, getRequest, getRouterSettings, listProviders, listRoutes, publicProvider, resolveModelPricing } from "./db.mjs";
 import { getSecret } from "./secrets.mjs";
 import { DEFAULT_MODEL } from "./constants.mjs";
 import { calculateOfficialCost } from "./pricing.mjs";
@@ -45,6 +45,24 @@ const SAME_PROVIDER_RETRY_HTTP_STATUSES = new Set([
   526,
   527,
 ]);
+const CIRCUIT_RECOVERY_INTERVAL_MS = 5000;
+const CIRCUIT_PROBE_TIMEOUT_MS = 10000;
+const AUTO_RECOVERY_FAILURE_CATEGORIES = new Set([
+  "capacity",
+  "connect_timeout",
+  "network",
+  "rate_limit",
+  "request_timeout",
+  "server_error",
+  "stream_idle_timeout",
+  "stream_interrupted",
+  "stream_progress_timeout",
+  "stream_protocol",
+  "timeout",
+  "upstream_5xx",
+  "upstream_semantic_failure",
+  "vector_store_timeout",
+]);
 class UpstreamSemanticFailureError extends Error {
   constructor(status, message, category = "upstream_semantic_failure", code = "") {
     super(message);
@@ -86,6 +104,67 @@ const HOP_BY_HOP_HEADERS = new Set([
 ]);
 const ADAPTIVE_TIMEOUT_CACHE_TTL_MS = 5 * 60 * 1000;
 const ADAPTIVE_TIMEOUT_MAX_STEP_MS = 2000;
+const CONVERSATION_BLOCK_TTL_MS = 7 * 86400000;
+const RAWCHAT_SAFETY_BLOCK_MESSAGE = "This request was blocked because it contains restricted safety-sensitive content.";
+
+function isRawchatProvider(provider) {
+  return String(provider?.base_url || "").toLowerCase().includes("rawchat");
+}
+
+function headerValue(headers, name) {
+  const value = headers?.[name];
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function parseJsonHeader(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function extractConversationId(body, req) {
+  const codexTurnMetadata = parseJsonHeader(headerValue(req?.headers, "x-codex-turn-metadata"));
+  const clientMetadata = body?.client_metadata && typeof body.client_metadata === "object"
+    ? body.client_metadata
+    : null;
+  const candidates = [
+    headerValue(req?.headers, "thread-id"),
+    headerValue(req?.headers, "session-id"),
+    codexTurnMetadata?.thread_id,
+    codexTurnMetadata?.session_id,
+    clientMetadata?.thread_id,
+    clientMetadata?.session_id,
+    typeof body?.conversation === "string" ? body.conversation : body?.conversation?.id,
+    body?.conversation_id,
+    body?.session_id,
+    body?.previous_response_id,
+    headerValue(req?.headers, "x-client-request-id"),
+    body?.prompt_cache_key,
+  ];
+  const value = candidates.find((candidate) => typeof candidate === "string" && candidate.trim());
+  return value ? value.trim().slice(0, 512) : null;
+}
+
+function conversationHash(conversationId) {
+  return conversationId
+    ? createHash("sha256").update(conversationId).digest("hex")
+    : null;
+}
+
+function isRawchatSafetyMessage(message) {
+  return String(message || "").toLowerCase().includes(RAWCHAT_SAFETY_BLOCK_MESSAGE.toLowerCase());
+}
+
+function conversationBlockedMessage(conversationId, upstreamMessage = RAWCHAT_SAFETY_BLOCK_MESSAGE) {
+  const detail = String(upstreamMessage || RAWCHAT_SAFETY_BLOCK_MESSAGE).slice(0, 500);
+  return conversationId
+    ? `该 rawchat 会话已被上游安全策略拦截（会话 ID：${conversationId}）：${detail}`
+    : `该 rawchat 请求被上游安全策略拦截（未识别会话 ID）：${detail}`;
+}
 
 function abortError(code, message) {
   const error = new Error(message);
@@ -178,10 +257,173 @@ export class RouterEngine {
     this.streamSamples = new Map();
     this.streamSequenceNumbers = new Map();
     this.circuitWaiters = new Map();
+    this.circuitRecoveryTimer = null;
+    this.circuitProbeInProgress = new Set();
+    this.circuitProbeControllers = new Map();
+    this.circuitProbeGenerations = new Map();
+  }
+
+  startCircuitRecovery(intervalMs = CIRCUIT_RECOVERY_INTERVAL_MS) {
+    if (this.circuitRecoveryTimer) return;
+    const interval = Math.max(1000, Number(intervalMs) || CIRCUIT_RECOVERY_INTERVAL_MS);
+    this.circuitRecoveryTimer = setInterval(() => {
+      void this.runCircuitRecovery().catch((error) => {
+        console.warn(`[circuit] 自动恢复探测失败: ${safeMessage(error)}`);
+      });
+    }, interval);
+    this.circuitRecoveryTimer.unref?.();
+    void this.runCircuitRecovery().catch((error) => {
+      console.warn(`[circuit] 自动恢复探测失败: ${safeMessage(error)}`);
+    });
+  }
+
+  stopCircuitRecovery() {
+    if (this.circuitRecoveryTimer) clearInterval(this.circuitRecoveryTimer);
+    this.circuitRecoveryTimer = null;
+    const activeProviderIds = new Set([
+      ...this.circuitProbeControllers.keys(),
+      ...this.circuitProbeInProgress,
+      ...this.halfOpenProbes,
+    ]);
+    for (const providerId of activeProviderIds) this.invalidateCircuitProbe(providerId);
+    this.circuitProbeControllers.clear();
+    this.circuitProbeInProgress.clear();
+    this.halfOpenProbes.clear();
+  }
+
+  async runCircuitRecovery() {
+    if (this.circuitProbeInProgress.size > 0 || this.halfOpenProbes.size > 0) return null;
+    const now = Date.now();
+    const candidate = listProviders(this.db)
+      .filter((provider) => provider.enabled
+        && provider.health_status !== "auth_error"
+        && provider.circuit_state === "open"
+        && provider.circuit_open_until
+        && Date.parse(provider.circuit_open_until) <= now
+        && (this.inFlight.get(provider.id) ?? 0) < provider.max_concurrency
+        && (!provider.last_error || AUTO_RECOVERY_FAILURE_CATEGORIES.has(provider.last_error)))
+      .sort((left, right) => Date.parse(left.circuit_open_until) - Date.parse(right.circuit_open_until)
+        || Date.parse(left.updated_at) - Date.parse(right.updated_at)
+        || left.name.localeCompare(right.name, "zh-CN"))[0];
+    if (!candidate) return null;
+
+    const timestamp = new Date().toISOString();
+    const transition = this.db.prepare(`
+      UPDATE providers
+         SET circuit_state = 'half_open', updated_at = ?
+       WHERE id = ? AND enabled = 1 AND health_status != 'auth_error'
+         AND circuit_state = 'open' AND circuit_open_until IS NOT NULL
+         AND circuit_open_until <= ?
+    `).run(timestamp, candidate.id, timestamp);
+    if (!transition.changes) return null;
+
+    const provider = getProvider(this.db, candidate.id);
+    if (!provider) return null;
+    const generation = (this.circuitProbeGenerations.get(provider.id) ?? 0) + 1;
+    const controller = new AbortController();
+    this.circuitProbeGenerations.set(provider.id, generation);
+    this.circuitProbeControllers.set(provider.id, controller);
+    this.halfOpenProbes.add(provider.id);
+    this.circuitProbeInProgress.add(provider.id);
+    this.publish("circuit.state_changed", { provider_id: provider.id, state: "half_open" });
+    this.publish("provider.health_changed", { provider });
+    this.publish("circuit.probe_started", { provider_id: provider.id });
+    try {
+      const result = await probeProvider(this.db, this.dataDir, provider.id, controller.signal);
+      if (this.circuitProbeGenerations.get(provider.id) !== generation) return result;
+      if (result.ok) this.recordSuccess(provider);
+      else if (result.category) this.recordFailure(provider, result.category);
+      return result;
+    } finally {
+      if (this.circuitProbeGenerations.get(provider.id) === generation) {
+        this.circuitProbeControllers.delete(provider.id);
+        this.halfOpenProbes.delete(provider.id);
+        this.circuitProbeInProgress.delete(provider.id);
+        this.notifyCircuitChange(provider.id);
+        this.publish("circuit.probe_finished", { provider_id: provider.id });
+      }
+    }
+  }
+
+  invalidateCircuitProbe(providerId) {
+    const nextGeneration = (this.circuitProbeGenerations.get(providerId) ?? 0) + 1;
+    this.circuitProbeGenerations.set(providerId, nextGeneration);
+    const controller = this.circuitProbeControllers.get(providerId);
+    if (controller && !controller.signal.aborted) {
+      controller.abort(abortError("circuit_probe_invalidated", "中转配置已变更，取消旧的恢复探测"));
+    }
+    this.circuitProbeControllers.delete(providerId);
+    this.halfOpenProbes.delete(providerId);
+    this.circuitProbeInProgress.delete(providerId);
+    this.notifyCircuitChange(providerId);
   }
 
   clearFirstTokenTimeoutCache() {
     this.firstTokenTimeoutCache.clear();
+  }
+
+  isConversationBlocked(provider, conversationId) {
+    if (!isRawchatProvider(provider) || !conversationId) return false;
+    const hash = conversationHash(conversationId);
+    const row = this.db.prepare(`
+      SELECT 1 FROM provider_conversation_blocks
+       WHERE provider_id = ? AND conversation_hash = ? AND expires_at > ?
+    `).get(provider.id, hash, new Date().toISOString());
+    return Boolean(row);
+  }
+
+  blockConversation(provider, conversationId, reason = RAWCHAT_SAFETY_BLOCK_MESSAGE) {
+    if (!isRawchatProvider(provider) || !conversationId) return false;
+    const blockedAt = new Date();
+    const expiresAt = new Date(blockedAt.getTime() + CONVERSATION_BLOCK_TTL_MS);
+    this.db.prepare(`
+      INSERT INTO provider_conversation_blocks
+        (provider_id, conversation_hash, blocked_at, expires_at, reason)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(provider_id, conversation_hash) DO UPDATE SET
+        blocked_at = excluded.blocked_at,
+        expires_at = excluded.expires_at,
+        reason = excluded.reason
+    `).run(
+      provider.id,
+      conversationHash(conversationId),
+      blockedAt.toISOString(),
+      expiresAt.toISOString(),
+      String(reason || RAWCHAT_SAFETY_BLOCK_MESSAGE).slice(0, 500),
+    );
+    return true;
+  }
+
+  clearConversationBlocks(providerId) {
+    return this.db.prepare("DELETE FROM provider_conversation_blocks WHERE provider_id = ?").run(providerId);
+  }
+
+  markConversationBlocked(requestId, provider, conversationId, message) {
+    if (conversationId) this.blockConversation(provider, conversationId, message);
+    this.markRequestConversationBlocked(requestId, conversationId, message);
+  }
+
+  markRequestConversationBlocked(requestId, conversationId, message) {
+    this.updateRequest(requestId, {
+      conversation_id: conversationId || undefined,
+      conversation_blocked: 1,
+      error_category: "conversation_blocked",
+      error_message: conversationBlockedMessage(conversationId, message),
+    });
+  }
+
+  blockedConversationProvider(route, conversationId) {
+    if (!conversationId) return null;
+    for (const member of route.group.members) {
+      if (!member.enabled || !member.provider_enabled) continue;
+      const provider = getProvider(this.db, member.provider_id);
+      if (provider && this.isConversationBlocked(provider, conversationId)) return provider;
+    }
+    return null;
+  }
+
+  getRequestConversationId(requestId) {
+    return this.db.prepare("SELECT conversation_id FROM requests WHERE id = ?").get(requestId)?.conversation_id || null;
   }
 
   async handle(req, res, { upstreamEndpoint = "responses", clientProtocol = "responses" } = {}) {
@@ -222,11 +464,13 @@ export class RouterEngine {
 
     const requestedModel = String(body.model ?? DEFAULT_MODEL);
     const reasoningEffort = extractReasoningEffort(body);
+    const conversationId = extractConversationId(body, req);
     const isStream = upstreamEndpoint !== "responses/compact" && body.stream === true;
     this.updateRequest(requestId, {
       status: "routing",
       requested_model: requestedModel,
       reasoning_effort: reasoningEffort,
+      conversation_id: conversationId || undefined,
       is_stream: isStream ? 1 : 0,
       client_protocol: clientProtocol,
     });
@@ -250,6 +494,15 @@ export class RouterEngine {
       route_rule_id: route.rule.id,
       route_group_id: route.group.id,
     });
+    const blockedConversationProvider = this.blockedConversationProvider(route, conversationId);
+    if (blockedConversationProvider) {
+      this.markRequestConversationBlocked(
+        requestId,
+        conversationId,
+        `已跳过 ${blockedConversationProvider.name} 对该会话的后续请求`,
+      );
+      this.emitRequest(requestId, "request.status_changed");
+    }
 
     const attempted = new Set();
     let maxAttempts = route.group.failover_enabled ? route.group.max_attempts : 1;
@@ -270,12 +523,13 @@ export class RouterEngine {
       if (retryProviderId) {
         const retryProvider = getProvider(this.db, retryProviderId);
         retryProviderId = null;
-        if (retryProvider && this.providerAvailable(retryProvider)) {
+        if (retryProvider && !this.isConversationBlocked(retryProvider, conversationId)
+          && this.providerAvailable(retryProvider)) {
           selection = this.claimSelection(retryProvider);
         }
       }
       if (!selection) {
-        const recovery = this.selectCircuitRecovery(route, attempted);
+        const recovery = this.selectCircuitRecovery(route, attempted, conversationId);
         if (recovery?.waitProviderId) {
           const ready = await this.waitForCircuitChange(
             recovery.waitProviderId,
@@ -303,9 +557,9 @@ export class RouterEngine {
         }
         selection = recovery?.selection ?? null;
       }
-      selection ??= this.selectProvider(route, body, attempted);
+      selection ??= this.selectProvider(route, body, attempted, { conversationId });
       if (!selection) {
-        if (attempted.size === 0) finalError = this.routeUnavailable(route, attempted);
+        if (attempted.size === 0) finalError = this.routeUnavailable(route, attempted, conversationId);
         break;
       }
       const { provider, probe } = selection;
@@ -495,6 +749,21 @@ export class RouterEngine {
         clearTimeout(requestTimer);
         this.releaseProvider(provider.id, probe);
         const message = extractUpstreamError(errorText, upstream.status);
+        if (isRawchatProvider(provider) && isRawchatSafetyMessage(message)) {
+          this.markConversationBlocked(requestId, provider, conversationId, message);
+          this.finishAttempt(attemptId, attemptMono, "failed", upstream.status, "conversation_blocked", message, {
+            termination_reason: "conversation_blocked",
+            stream_phase: "failed",
+          });
+          this.publishAttempt(requestId, attemptId);
+          finalError = {
+            status: upstream.status,
+            category: "conversation_blocked",
+            message: conversationBlockedMessage(conversationId, message),
+          };
+          if (!route.group.failover_enabled) break;
+          continue;
+        }
         const retryCategory = transientHtmlGatewayFailure
           ? "server_error"
           : sameProviderRetryCategory(upstream.status, message);
@@ -576,8 +845,12 @@ export class RouterEngine {
             clientController,
             startRaceAttempt: async () => {
               const raceSelection = firstTokenTimeoutMode === "race_same"
-                ? (this.providerAvailable(provider) ? this.claimSelection(provider) : null)
-              : this.selectProvider(route, body, attempted, { excludeUnhealthy: true });
+                ? (!this.isConversationBlocked(provider, conversationId) && this.providerAvailable(provider)
+                  ? this.claimSelection(provider) : null)
+                : this.selectProvider(route, body, attempted, {
+                  excludeUnhealthy: true,
+                  conversationId,
+                });
               if (!raceSelection) return null;
               attempted.add(raceSelection.provider.id);
               maxAttempts += 1;
@@ -638,6 +911,21 @@ export class RouterEngine {
         }
         this.releaseProvider(provider.id, probe);
         if (error instanceof UpstreamSemanticFailureError && !clientTerminationReason(clientController)) {
+          if (isRawchatProvider(provider) && isRawchatSafetyMessage(error.message) && !res.headersSent) {
+            this.markConversationBlocked(requestId, provider, conversationId, error.message);
+            this.finishAttempt(attemptId, attemptMono, "failed", upstream.status, "conversation_blocked", error.message, {
+              termination_reason: "conversation_blocked",
+              stream_phase: "failed",
+            });
+            this.publishAttempt(requestId, attemptId);
+            finalError = {
+              status: error.status ?? upstream.status,
+              category: "conversation_blocked",
+              message: conversationBlockedMessage(conversationId, error.message),
+            };
+            if (!route.group.failover_enabled) break;
+            continue;
+          }
           const retries = providerRetryCounts.get(provider.id) ?? 0;
           const canRetrySameProvider = error.retryable && retries < providerRetryLimit;
           this.finishAttempt(attemptId, attemptMono, "failed", upstream.status, error.category, error.message);
@@ -890,8 +1178,10 @@ export class RouterEngine {
 
     this.recordFirstTokenTimeout(provider);
     this.publish("provider.health_changed", { provider: getProvider(this.db, provider.id) });
-    this.updateRequest(requestId, { race_triggered: 1 });
     const fallback = await startRaceAttempt();
+    if (fallback) {
+      this.updateRequest(requestId, { race_triggered: 1 });
+    }
     let fallbackCandidate = null;
     if (fallback?.ok && fallback.upstream?.ok) {
       fallbackCandidate = createRaceCandidate({
@@ -921,9 +1211,11 @@ export class RouterEngine {
     if (!fallbackCandidate) {
       const late = await original.firstEvent;
       if (late.kind === "output") {
-        this.updateRequest(requestId, {
-          race_winner_sequence: this.getAttempt(original.attemptId)?.sequence ?? null,
-        });
+        if (fallback) {
+          this.updateRequest(requestId, {
+            race_winner_sequence: this.getAttempt(original.attemptId)?.sequence ?? null,
+          });
+        }
         await this.forwardRaceCandidate({
           candidate: original,
           requestId,
@@ -1634,13 +1926,26 @@ export class RouterEngine {
     protocolWrapped = false,
     lastStreamEvent,
   }) {
-    const terminalEvent = lastStreamEvent || failure.lastStreamEvent || "response.failed";
+    const conversationId = this.getRequestConversationId(requestId);
+    const conversationBlocked = isRawchatProvider(provider) && isRawchatSafetyMessage(failure.message);
+    const effectiveFailure = conversationBlocked
+      ? {
+        ...failure,
+        category: "conversation_blocked",
+        message: conversationBlockedMessage(conversationId, failure.message),
+      }
+      : failure;
+    if (conversationBlocked) {
+      this.markConversationBlocked(requestId, provider, conversationId, failure.message);
+      affectsProviderHealth = false;
+    }
+    const terminalEvent = lastStreamEvent || effectiveFailure.lastStreamEvent || "response.failed";
     const usageFields = usage && (usage.input_tokens != null || usage.output_tokens != null)
       ? usageFieldsForModel(this.db, upstreamModel, usage, true)
       : { cost_status: "unknown" };
     this.updateAttempt(attemptId, {
       ...usageFields,
-      stream_phase: failure.streamPhase || "failed",
+      stream_phase: effectiveFailure.streamPhase || "failed",
       last_stream_event: terminalEvent,
       upstream_response_id: responseId || undefined,
       actual_upstream_model: actualUpstreamModel || "",
@@ -1648,10 +1953,10 @@ export class RouterEngine {
       protocol_wrapped: protocolWrapped ? 1 : 0,
     });
     this.releaseProvider(provider.id, probe);
-    if (affectsProviderHealth) this.recordFailure(provider, failure.category);
-    this.finishAttempt(attemptId, attemptMono, "failed", upstream.status, failure.category, failure.message, {
-      termination_reason: failure.category,
-      stream_phase: failure.streamPhase || "failed",
+    if (affectsProviderHealth) this.recordFailure(provider, effectiveFailure.category);
+    this.finishAttempt(attemptId, attemptMono, "failed", upstream.status, effectiveFailure.category, effectiveFailure.message, {
+      termination_reason: effectiveFailure.category,
+      stream_phase: effectiveFailure.streamPhase || "failed",
       last_stream_event: terminalEvent,
       upstream_response_id: responseId || undefined,
       actual_upstream_model: actualUpstreamModel || "",
@@ -1667,10 +1972,10 @@ export class RouterEngine {
       final_provider_id: provider.id,
       upstream_model: upstreamModel,
       actual_upstream_model: actualUpstreamModel || "",
-      error_category: failure.category,
-      error_message: failure.message,
-      termination_reason: failure.category,
-      stream_phase: failure.streamPhase || "failed",
+      error_category: effectiveFailure.category,
+      error_message: effectiveFailure.message,
+      termination_reason: effectiveFailure.category,
+      stream_phase: effectiveFailure.streamPhase || "failed",
       last_stream_event: terminalEvent,
       upstream_response_id: responseId || undefined,
       upstream_protocol: upstreamProtocol,
@@ -1701,11 +2006,13 @@ export class RouterEngine {
   }
 
   selectProvider(route, body, attempted, options = {}) {
-    const { excludeUnhealthy = false } = options;
+    const { excludeUnhealthy = false, conversationId = null } = options;
     const candidates = route.group.members
       .filter((member) => member.enabled && member.provider_enabled && !attempted.has(member.provider_id))
       .map((member) => ({ member, provider: getProvider(this.db, member.provider_id) }))
-      .filter(({ provider }) => provider && this.providerAvailable(provider, { excludeUnhealthy }));
+      .filter(({ provider }) => provider
+        && !this.isConversationBlocked(provider, conversationId)
+        && this.providerAvailable(provider, { excludeUnhealthy }));
 
     if (candidates.length === 0) return null;
     const stickyId = route.group.sticky_enabled ? this.stickyProvider(body.previous_response_id) : null;
@@ -1718,11 +2025,13 @@ export class RouterEngine {
     return this.claimSelection(selected.provider);
   }
 
-  selectCircuitRecovery(route, attempted) {
+  selectCircuitRecovery(route, attempted, conversationId = null) {
     const candidates = route.group.members
       .filter((member) => member.enabled && member.provider_enabled && !attempted.has(member.provider_id))
       .map((member) => ({ member, provider: getProvider(this.db, member.provider_id) }))
-      .filter(({ provider }) => provider?.enabled && provider.health_status !== "auth_error");
+      .filter(({ provider }) => provider?.enabled
+        && !this.isConversationBlocked(provider, conversationId)
+        && provider.health_status !== "auth_error");
     if (candidates.length === 0) return null;
     if (candidates.some(({ provider }) => !["open", "half_open"].includes(provider.circuit_state))) return null;
 
@@ -1760,7 +2069,7 @@ export class RouterEngine {
     return { selection: this.claimSelection(earliest.provider) };
   }
 
-  routeUnavailable(route, attempted) {
+  routeUnavailable(route, attempted, conversationId = null) {
     const members = route.group.members
       .filter((member) => member.enabled && member.provider_enabled && !attempted.has(member.provider_id));
     if (members.length === 0) {
@@ -1769,6 +2078,14 @@ export class RouterEngine {
     const providers = members.map((member) => getProvider(this.db, member.provider_id)).filter(Boolean);
     if (providers.length === 0) {
       return { status: 503, category: "no_enabled_provider", message: "路由组内没有可用的中转配置" };
+    }
+    const blocked = providers.filter((provider) => this.isConversationBlocked(provider, conversationId));
+    if (blocked.length === providers.length && blocked.length > 0) {
+      return {
+        status: 503,
+        category: "conversation_blocked",
+        message: conversationBlockedMessage(conversationId),
+      };
     }
     if (providers.every((provider) => provider.health_status === "auth_error")) {
       return { status: 503, category: "auth_unavailable", message: "所有中转均存在鉴权异常" };
@@ -1939,6 +2256,7 @@ export class RouterEngine {
   }
 
   recordFailure(provider, category, explicitCooldownMs) {
+    if (category === "conversation_blocked") return getProvider(this.db, provider.id);
     const current = getProvider(this.db, provider.id);
     const failures = (current?.consecutive_failures ?? 0) + 1;
     const authError = category === "auth";
@@ -1971,6 +2289,7 @@ export class RouterEngine {
   }
 
   resetCircuit(providerId) {
+    this.invalidateCircuitProbe(providerId);
     const timestamp = new Date().toISOString();
     this.db.prepare(`
       UPDATE providers SET health_status = 'unknown', circuit_state = 'closed',
@@ -2083,7 +2402,8 @@ export class RouterEngine {
       "cache_creation_cost_usd", "output_cost_usd", "total_cost_usd",
       "pricing_model", "pricing_source",
       "http_status", "error_category", "error_message",
-      "termination_reason", "stream_phase", "last_stream_event", "upstream_response_id", "cost_status",
+      "termination_reason", "stream_phase", "last_stream_event", "upstream_response_id",
+      "conversation_id", "conversation_blocked", "cost_status",
     ];
     const entries = Object.entries(fields).filter(([key, value]) => allowed.includes(key) && value !== undefined);
     if (entries.length === 0) return;
@@ -2440,6 +2760,125 @@ export async function testProvider(db, dataDir, engine, providerId) {
     stream: true,
     error: extractUpstreamError(text, response.status),
   };
+}
+
+async function probeProvider(db, dataDir, providerId, signal) {
+  const provider = getProvider(db, providerId);
+  if (!provider) return { ok: false, provider_id: providerId, error: "中转不存在" };
+  const secret = getSecret(dataDir, provider.id);
+  const started = performance.now();
+  const timeoutMs = Math.max(1000, Math.min(CIRCUIT_PROBE_TIMEOUT_MS, provider.connect_timeout_ms + 5000));
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+  let response;
+  try {
+    response = await fetch(responsesUrl(provider.base_url), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "text/event-stream",
+        ...(secret ? { authorization: `Bearer ${secret}` } : {}),
+        ...parseHeaders(provider.headers_json),
+      },
+      body: JSON.stringify({
+        model: provider.test_model,
+        input: "Reply with OK.",
+        max_output_tokens: 8,
+        stream: true,
+      }),
+      signal: requestSignal,
+    });
+  } catch (error) {
+    if (signal?.aborted && signal.reason?.code === "circuit_probe_invalidated") {
+      return { ok: false, provider_id: provider.id, cancelled: true };
+    }
+    const category = timeoutSignal.aborted || error?.name === "TimeoutError" ? "timeout" : "network";
+    return {
+      ok: false,
+      provider_id: provider.id,
+      latency_ms: Math.round(performance.now() - started),
+      error: safeMessage(error),
+      category,
+    };
+  }
+
+  const contentType = response.headers.get("content-type") || "";
+  if (response.ok) {
+    let inspection;
+    try {
+      inspection = await inspectProbeStream(response);
+    } catch (error) {
+      if (signal?.aborted && signal.reason?.code === "circuit_probe_invalidated") {
+        return { ok: false, provider_id: provider.id, cancelled: true };
+      }
+      return {
+        ok: false,
+        provider_id: provider.id,
+        latency_ms: Math.round(performance.now() - started),
+        status: response.status,
+        category: timeoutSignal.aborted || error?.name === "TimeoutError" ? "timeout" : "network",
+        error: safeMessage(error),
+      };
+    }
+    const latency = Math.round(performance.now() - started);
+    if (!contentType.toLowerCase().includes("text/event-stream") || !inspection.completed) {
+      return {
+        ok: false,
+        provider_id: provider.id,
+        latency_ms: latency,
+        status: response.status,
+        category: "stream_protocol",
+        error: !contentType.toLowerCase().includes("text/event-stream")
+          ? "恢复探测未返回 text/event-stream"
+          : "恢复探测流缺少 response.completed 结束事件",
+      };
+    }
+    return {
+      ok: true,
+      provider_id: provider.id,
+      latency_ms: latency,
+      status: response.status,
+      event_count: inspection.eventCount,
+    };
+  }
+
+  const responseText = await response.text().catch(() => "");
+  const latency = Math.round(performance.now() - started);
+  const classification = classifyStatus(response.status);
+  const category = classification.auth || classification.retryable
+    ? classification.category
+    : "probe_configuration";
+  return {
+    ok: false,
+    provider_id: provider.id,
+    latency_ms: latency,
+    status: response.status,
+    error: extractUpstreamError(responseText, response.status),
+    category,
+  };
+}
+
+async function inspectProbeStream(response) {
+  const reader = response.body?.getReader();
+  if (!reader) return { completed: false, eventCount: 0 };
+  let completed = false;
+  let eventCount = 0;
+  const parser = createSseInspector((payload) => {
+    eventCount += 1;
+    if (String(payload?.type || payload?.object || "") === "response.completed") completed = true;
+  });
+  try {
+    while (!completed) {
+      const result = await reader.read();
+      if (result.done) break;
+      parser.push(Buffer.from(result.value));
+    }
+    if (!completed) parser.finish();
+    return { completed, eventCount };
+  } finally {
+    if (completed) await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
 }
 
 function inspectTestStream(value) {

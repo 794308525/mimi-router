@@ -706,9 +706,9 @@ export function Overview({
                   <td><span className="tabular">{formatTime(request.started_at)}</span></td>
                   <td>
                     <button className="usage-record-link" type="button" onClick={() => onOpenRequest(request)}>
-                      <ModelRuntime requestedModel={request.requested_model} actualModel={request.actual_upstream_model} reasoningEffort={request.reasoning_effort} providerName={providerNamesVisible ? request.provider_name : null} />
+                      <ModelRuntime requestedModel={request.requested_model} actualModel={request.actual_upstream_model} reasoningEffort={request.reasoning_effort} providerName={providerNamesVisible ? request.provider_name : null} initialProviderName={providerNamesVisible ? request.initial_provider_name : null} providerChanged={providerRouteChanged(request)} />
                       {(() => {
-                        const routingMeta = requestRoutingMeta(request, providerNamesVisible);
+                        const routingMeta = requestRoutingMeta(request);
                         return routingMeta ? <small className="record-routing-meta">{routingMeta}</small> : null;
                       })()}
                     </button>
@@ -779,17 +779,17 @@ export function Overview({
   );
 }
 
-function requestRoutingMeta(request: RequestRecord, providerNamesVisible: boolean) {
+function requestRoutingMeta(request: RequestRecord) {
   const parts: string[] = [];
   if (request.attempt_count > 1) parts.push(`尝试 ${request.attempt_count} 次`);
-  const finalProviderChanged = request.attempt_count > 1
+  return parts.join(" · ");
+}
+
+function providerRouteChanged(request: RequestRecord) {
+  return request.attempt_count > 1
     && request.initial_provider_id != null
     && request.final_provider_id != null
     && request.final_provider_id !== request.initial_provider_id;
-  if (finalProviderChanged) {
-    parts.push(`最终 ${providerNamesVisible ? (request.provider_name || "未选择") : "渠道已隐藏"}`);
-  }
-  return parts.join(" · ");
 }
 
 function networkTimingTitle(request: RequestRecord) {

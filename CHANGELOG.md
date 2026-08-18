@@ -2,6 +2,28 @@
 
 This project follows semantic versioning. Every feature update must keep the application version and both language variants of the release notes in sync.
 
+## 0.2.38 - 2026-08-19
+
+- Fixed Codex conversation ID detection by reading thread/session headers, Codex metadata, and compatible body fields so rawchat safety blocks can be tied to the affected conversation.
+- Dashboard, request history, and request details now show `initial provider → final provider` when routing switches channels; unchanged and same-provider retries show only one provider.
+
+## 0.2.37 - 2026-08-19
+
+- Cleared rawchat conversation blocks when a provider API key or base URL changes.
+- Stopped active circuit-recovery probes cleanly during gateway shutdown.
+
+## 0.2.36 - 2026-08-19
+
+- Added rawchat-only conversation safety blocking: a safety-sensitive-content response now skips only that conversation for the matching rawchat base URL, keeps the provider healthy, and records the session ID in dashboard and request history.
+
+## 0.2.35 - 2026-08-18
+
+- Fixed different-provider race records so a request is marked as raced only after a second provider actually starts; requests without an available fallback remain ordinary requests.
+
+## 0.2.34 - 2026-08-18
+
+- Added background circuit recovery probes for transient upstream failures while keeping the configured cooldown fixed after failed half-open probes.
+
 ## 0.2.33 - 2026-08-18
 
 - Fixed macOS Intel releases failing during DMG Finder customization by using a CI-compatible DMG generation path.

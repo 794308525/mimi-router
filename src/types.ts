@@ -229,6 +229,8 @@ export type RequestRecord = {
   stream_phase: string | null;
   last_stream_event: string | null;
   upstream_response_id: string | null;
+  conversation_id: string | null;
+  conversation_blocked: number;
   cost_status: "confirmed" | "partial" | "unknown" | "not_applicable";
   http_status: number | null;
   error_category: string | null;
@@ -237,6 +239,7 @@ export type RequestRecord = {
   route_group_name: string | null;
   route_rule_name: string | null;
   initial_provider_id: string | null;
+  initial_provider_name: string | null;
   attempts?: RequestAttempt[];
 };
 

@@ -462,6 +462,8 @@ tbody tr.is-drag-over-after td { box-shadow: inset 0 -2px 0 var(--tech); }
 .model-runtime-line > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-runtime-line svg { flex: none; }
 .model-runtime-meta { max-width: 100%; margin-top: 3px; overflow: hidden; color: var(--faint); font-size: 11px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.provider-route { min-width: 0; display: inline-flex; align-items: center; max-width: 100%; overflow: hidden; color: inherit; font-weight: inherit; text-overflow: ellipsis; white-space: nowrap; }
+.provider-route.is-changed { padding: 1px 4px; border-radius: 4px; color: var(--warn-dark); background: var(--warn-soft); font-weight: 600; }
 .model-runtime.is-changed .model-runtime-line { padding: 3px 6px; border: 1px solid #f4c99f; border-radius: 5px; color: var(--warn-dark); background: var(--warn-soft); }
 .failover-mark { margin-left: 6px; padding: 2px 5px; border-radius: 4px; color: var(--warn-dark); background: var(--warn-soft); font-size: 11px; }
 

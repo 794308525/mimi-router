@@ -10,9 +10,11 @@ import {
   Modal,
   ModelRuntime,
   PageHeader,
+  ProviderRoute,
   RequestFailureReason,
   RequestStatus,
   TokenStack,
+  compactConversationId,
   failureReasonLabel,
   formatCacheHitRate,
   formatDuration,
@@ -225,7 +227,7 @@ export function RequestsPage({
                     <td><div className="request-status-cell"><RequestStatus status={request.status} /><RequestFailureReason request={request} /></div></td>
                     <td><span className="tabular">{formatTime(request.started_at)}</span></td>
                     <td><ModelRuntime requestedModel={request.requested_model} actualModel={request.actual_upstream_model} reasoningEffort={request.reasoning_effort} /></td>
-                    <td>{request.provider_name || <span className="text-muted">等待路由</span>}</td>
+                    <td>{request.provider_name || request.initial_provider_name ? <ProviderRoute initialName={request.initial_provider_name} finalName={request.provider_name} changed={providerRouteChanged(request)} /> : <span className="text-muted">等待路由</span>}</td>
                     <td><ElapsedTime startedAt={request.started_at} durationMs={request.duration_ms} running={running} /></td>
                     <td><strong className={`first-token-value ${firstToken.tone}`} title={firstToken.title}>{formatDuration(request.ttft_ms)}</strong></td>
                     <td><TokenStack input={request.input_tokens} cached={request.cached_tokens} output={request.output_tokens} /></td>
@@ -290,7 +292,7 @@ export function RequestDetail({
         <div><span>协议路径</span><strong>{protocolPathLabel(request.client_protocol, request.upstream_protocol, request.protocol_wrapped)}</strong></div>
         <div><span>路由规则</span><strong>{request.route_rule_name || "-"}</strong></div>
         <div><span>路由组</span><strong>{request.route_group_name || "-"}</strong></div>
-        <div><span>最终中转</span><strong>{request.provider_name || "-"}</strong></div>
+        <div><span>{providerRouteChanged(request) ? "中转路径" : "最终中转"}</span><strong><ProviderRoute initialName={request.initial_provider_name} finalName={request.provider_name} changed={providerRouteChanged(request)} /></strong></div>
         <div><span>切慢首字阈值</span><strong>{formatDuration(request.first_token_timeout_ms)}</strong></div>
         <div><span>最长数据块间隔</span><strong>{formatDuration(request.max_stream_chunk_idle_ms)}</strong></div>
         <div><span>最长有效输出间隔</span><strong>{formatDuration(request.max_meaningful_output_idle_ms)}</strong></div>
@@ -310,7 +312,7 @@ export function RequestDetail({
         <div><span>最后事件</span><strong>{request.last_stream_event || "-"}</strong></div>
         <div><span>费用状态</span><strong>{costStatusLabel(request.cost_status)}</strong></div>
       </div>
-      {(request.error_message || request.termination_reason) && <div className="error-box"><strong>{failureReasonLabel(request.termination_reason || request.error_category)}</strong><p>{request.error_message || failureReasonLabel(request.termination_reason)}</p></div>}
+      {(request.error_message || request.termination_reason || request.conversation_blocked) && <div className="error-box"><strong>{request.conversation_blocked ? "会话被 rawchat 安全策略拦截" : failureReasonLabel(request.termination_reason || request.error_category)}</strong><p>{request.error_message || failureReasonLabel(request.termination_reason)}</p>{request.conversation_blocked && <p>会话 ID：{request.conversation_id ? compactConversationId(request.conversation_id) : "未识别"}</p>}</div>}
       <section className="attempts-section">
         <header><h3>上游尝试</h3>{loading && <RefreshCcw size={15} className="spin" />}</header>
         {request.attempts?.length ? (
@@ -334,6 +336,13 @@ export function RequestDetail({
 function connectionLabel(reused: number | null | undefined) {
   if (reused == null) return "-";
   return reused ? "复用连接" : "新建连接";
+}
+
+function providerRouteChanged(request: RequestRecord) {
+  return request.attempt_count > 1
+    && request.initial_provider_id != null
+    && request.final_provider_id != null
+    && request.final_provider_id !== request.initial_provider_id;
 }
 
 function raceResultLabel(request: RequestRecord) {

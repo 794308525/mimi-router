@@ -137,6 +137,8 @@ export function createDatabase(dataDir) {
       stream_phase TEXT,
       last_stream_event TEXT,
       upstream_response_id TEXT,
+      conversation_id TEXT,
+      conversation_blocked INTEGER NOT NULL DEFAULT 0,
       cost_status TEXT NOT NULL DEFAULT 'unknown'
     );
 
@@ -227,6 +229,17 @@ export function createDatabase(dataDir) {
       ON request_attempts(started_at DESC, provider_id);
     CREATE INDEX IF NOT EXISTS idx_attempts_ttft_baseline
       ON request_attempts(provider_id, started_at DESC);
+    CREATE TABLE IF NOT EXISTS provider_conversation_blocks (
+      provider_id TEXT NOT NULL,
+      conversation_hash TEXT NOT NULL,
+      blocked_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      PRIMARY KEY (provider_id, conversation_hash),
+      FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_conversation_blocks_expiry
+      ON provider_conversation_blocks(expires_at);
   `);
 
   ensureColumn(db, "providers", "test_model", "TEXT NOT NULL DEFAULT 'gpt-5.6-terra'");
@@ -282,6 +295,8 @@ export function createDatabase(dataDir) {
   ensureColumn(db, "requests", "stream_phase", "TEXT");
   ensureColumn(db, "requests", "last_stream_event", "TEXT");
   ensureColumn(db, "requests", "upstream_response_id", "TEXT");
+  ensureColumn(db, "requests", "conversation_id", "TEXT");
+  ensureColumn(db, "requests", "conversation_blocked", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "requests", "cost_status", "TEXT NOT NULL DEFAULT 'unknown'");
   ensureColumn(db, "request_attempts", "input_tokens", "INTEGER");
   ensureColumn(db, "request_attempts", "output_tokens", "INTEGER");
@@ -455,6 +470,7 @@ export function createDatabase(dataDir) {
        AND stream_progress_timeout_ms = 60000
      );
   `));
+  db.prepare("DELETE FROM provider_conversation_blocks WHERE expires_at <= ?").run(now());
   runOnce(db, "2026-08-adaptive-attempt-samples", () => db.exec(`
     UPDATE request_attempts
        SET ttft_ms = ROUND((julianday(first_byte_at) - julianday(started_at)) * 86400000)
@@ -1116,7 +1132,15 @@ export function listRequests(db, limit = 100) {
              WHERE a.request_id = r.id
              ORDER BY a.sequence ASC
              LIMIT 1
-           ) AS initial_provider_id
+           ) AS initial_provider_id,
+           (
+             SELECT p2.name
+             FROM request_attempts a2
+             JOIN providers p2 ON p2.id = a2.provider_id
+             WHERE a2.request_id = r.id
+             ORDER BY a2.sequence ASC
+             LIMIT 1
+           ) AS initial_provider_name
     FROM requests r
     LEFT JOIN providers p ON p.id = r.final_provider_id
     LEFT JOIN route_groups rg ON rg.id = r.route_group_id
@@ -1174,7 +1198,15 @@ export function listRequestPage(db, input = {}) {
              WHERE a.request_id = r.id
              ORDER BY a.sequence ASC
              LIMIT 1
-           ) AS initial_provider_id
+           ) AS initial_provider_id,
+           (
+             SELECT p2.name
+             FROM request_attempts a2
+             JOIN providers p2 ON p2.id = a2.provider_id
+             WHERE a2.request_id = r.id
+             ORDER BY a2.sequence ASC
+             LIMIT 1
+           ) AS initial_provider_name
     ${from}
     ORDER BY r.started_at DESC LIMIT ? OFFSET ?
   `).all(...values, pageSize, (page - 1) * pageSize);
@@ -1200,7 +1232,15 @@ export function getRequest(db, id) {
              WHERE a.request_id = r.id
              ORDER BY a.sequence ASC
              LIMIT 1
-           ) AS initial_provider_id
+           ) AS initial_provider_id,
+           (
+             SELECT p2.name
+             FROM request_attempts a2
+             JOIN providers p2 ON p2.id = a2.provider_id
+             WHERE a2.request_id = r.id
+             ORDER BY a2.sequence ASC
+             LIMIT 1
+           ) AS initial_provider_name
     FROM requests r
     LEFT JOIN providers p ON p.id = r.final_provider_id
     LEFT JOIN route_groups rg ON rg.id = r.route_group_id

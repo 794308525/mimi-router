@@ -172,6 +172,7 @@ const FAILURE_REASON_LABELS: Record<string, string> = {
   invalid_json: "请求格式错误",
   unsupported_endpoint: "上游不支持该接口",
   first_token_timeout: "首字等待超时",
+  conversation_blocked: "会话被 rawchat 安全策略拦截",
 };
 
 export function failureReasonLabel(reason: string | null | undefined) {
@@ -179,12 +180,29 @@ export function failureReasonLabel(reason: string | null | undefined) {
 }
 
 export function RequestFailureReason({ request }: {
-  request: Pick<RequestRecord, "error_category" | "error_message" | "termination_reason">;
+  request: Pick<RequestRecord, "error_category" | "error_message" | "termination_reason" | "conversation_blocked" | "conversation_id">;
 }) {
   const reason = request.termination_reason || request.error_category;
+  if (request.conversation_blocked || reason === "conversation_blocked") {
+    const session = request.conversation_id ? compactConversationId(request.conversation_id) : "未识别";
+    return (
+      <small
+        className="request-failure-reason"
+        title={request.conversation_id ? `会话 ID：${request.conversation_id}` : "未识别会话 ID"}
+      >
+        会话被安全策略拦截 · 会话 ID：{session}
+      </small>
+    );
+  }
   if (!reason && !request.error_message) return null;
   const label = reason ? failureReasonLabel(reason) : request.error_message || "请求未正常结束";
   return <small className="request-failure-reason" title={request.error_message || label}>{label}</small>;
+}
+
+export function compactConversationId(value: string) {
+  const normalized = String(value || "");
+  if (normalized.length <= 20) return normalized;
+  return `${normalized.slice(0, 8)}…${normalized.slice(-8)}`;
 }
 
 export function EmptyState({ title, description, action }: { title: string; description: string; action?: ReactNode }) {
@@ -289,11 +307,13 @@ export function TokenStack({ input, cached, output }: {
   );
 }
 
-export function ModelRuntime({ requestedModel, actualModel, reasoningEffort, providerName }: {
+export function ModelRuntime({ requestedModel, actualModel, reasoningEffort, providerName, initialProviderName, providerChanged }: {
   requestedModel: string | null | undefined;
   actualModel: string | null | undefined;
   reasoningEffort: string | null | undefined;
   providerName?: string | null;
+  initialProviderName?: string | null;
+  providerChanged?: boolean;
 }) {
   const requested = requestedModel?.trim();
   const actual = actualModel?.trim();
@@ -306,9 +326,21 @@ export function ModelRuntime({ requestedModel, actualModel, reasoningEffort, pro
       <strong className="model-runtime-line" title={title}>
         {changed ? <><span>{requested}</span><ArrowRight size={12} /><span>{actual}</span></> : fallback}
       </strong>
-      <small className="model-runtime-meta">强度 {reasoningEffortLabel(reasoningEffort)}{providerName && <> · {providerName}</>}</small>
+      <small className="model-runtime-meta">强度 {reasoningEffortLabel(reasoningEffort)}{providerName && <> · <ProviderRoute initialName={initialProviderName} finalName={providerName} changed={providerChanged} /></>}</small>
     </span>
   );
+}
+
+export function ProviderRoute({ initialName, finalName, changed }: {
+  initialName?: string | null;
+  finalName?: string | null;
+  changed?: boolean;
+}) {
+  const initial = initialName?.trim();
+  const final = finalName?.trim();
+  const showRoute = Boolean(changed && initial && final);
+  const label = showRoute ? `${initial} → ${final}` : final || initial || "等待路由";
+  return <span className={`provider-route${showRoute ? " is-changed" : ""}`} title={label}>{label}</span>;
 }
 
 export function reasoningEffortLabel(effort: string | null | undefined) {

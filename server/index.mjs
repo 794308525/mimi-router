@@ -44,6 +44,7 @@ const db = createDatabase(dataDir);
 let routerAuthEnabled = getRouterSettings(db).api_auth_enabled;
 let routerApiKey = loadOrCreateRouterApiKey();
 const engine = new RouterEngine(db, dataDir, publish);
+engine.startCircuitRecovery();
 const benchmarks = new BenchmarkService(db, dataDir, publish);
 let pricingSyncPromise = null;
 const retentionTimer = setInterval(() => {
@@ -204,18 +205,23 @@ async function handleApi(req, res, url) {
     const input = await bodyJson(req);
     const existing = getProvider(db, providerMatch[1]);
     if (!existing) return json(res, 404, { error: "中转不存在" });
+    engine.invalidateCircuitProbe(existing.id);
+    const providerIdentityChanged = input.api_key !== undefined
+      || (input.base_url !== undefined && String(input.base_url) !== existing.base_url);
     if (input.api_key) setSecret(dataDir, existing.id, String(input.api_key));
     const provider = saveProvider(
       db,
       { ...input, has_secret: input.api_key ? true : existing.has_secret },
       existing.id,
     );
+    if (providerIdentityChanged) engine.clearConversationBlocks(existing.id);
     publish("provider.changed", { provider });
     return json(res, 200, provider);
   }
   if (providerMatch && req.method === "DELETE") {
     const existing = getProvider(db, providerMatch[1]);
     if (!existing) return json(res, 404, { error: "中转不存在" });
+    engine.invalidateCircuitProbe(existing.id);
     db.prepare("DELETE FROM providers WHERE id = ?").run(existing.id);
     deleteSecret(dataDir, existing.id);
     publish("provider.deleted", { provider_id: existing.id });
@@ -574,6 +580,7 @@ async function syncOfficialPricingOnFirstRun() {
 function shutdown() {
   clearInterval(heartbeatTimer);
   clearInterval(requestCleanupTimer);
+  engine.stopCircuitRecovery();
   server.close(() => {
     db.close();
     process.exit(0);

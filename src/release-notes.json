@@ -1,6 +1,70 @@
 {
-  "currentVersion": "0.2.33",
+  "currentVersion": "0.2.38",
   "releases": [
+    {
+      "version": "0.2.38",
+      "date": "2026-08-19",
+      "notes": {
+        "zh-CN": [
+          "修复 Codex 请求的会话 ID 识别：支持从 thread/session 请求头、Codex 元数据和兼容字段提取会话 ID，rawchat 安全拦截记录现在可以关联具体会话。",
+          "首页、请求记录和请求详情在渠道发生切换时显示“初始渠道 → 最终渠道”；未切换或仅同渠道重试时只显示一个渠道。"
+        ],
+        "en": [
+          "Fixed Codex conversation ID detection by reading thread/session headers, Codex metadata, and compatible body fields so rawchat safety blocks can be tied to the affected conversation.",
+          "Dashboard, request history, and request details now show initial provider → final provider when routing switches channels; unchanged and same-provider retries show only one provider."
+        ]
+      }
+    },
+    {
+      "version": "0.2.37",
+      "date": "2026-08-19",
+      "notes": {
+        "zh-CN": [
+          "渠道 API Key 或 base URL 变更时自动清理该渠道的旧 rawchat 会话封禁。",
+          "网关关闭时会干净中止正在进行的熔断恢复探测。"
+        ],
+        "en": [
+          "Cleared rawchat conversation blocks when a provider API key or base URL changes.",
+          "Stopped active circuit-recovery probes cleanly during gateway shutdown."
+        ]
+      }
+    },
+    {
+      "version": "0.2.36",
+      "date": "2026-08-19",
+      "notes": {
+        "zh-CN": [
+          "新增仅针对 base URL 含 rawchat 的会话级安全拦截：遇到安全敏感内容提示时只跳过当前会话，不熔断整个中转，并在首页和请求记录中标记问题及提示会话 ID。"
+        ],
+        "en": [
+          "Added rawchat-only conversation safety blocking: safety-sensitive-content responses now skip only the affected conversation, keep the provider healthy, and show the session ID in dashboard and request history."
+        ]
+      }
+    },
+    {
+      "version": "0.2.35",
+      "date": "2026-08-18",
+      "notes": {
+        "zh-CN": [
+          "修正分渠竞速记录：只有实际启动第二个不同中转后才标记为竞速；没有可用备用中转时按普通请求记录。"
+        ],
+        "en": [
+          "Fixed different-provider race records so a request is marked as raced only after a second provider actually starts; requests without an available fallback remain ordinary requests."
+        ]
+      }
+    },
+    {
+      "version": "0.2.34",
+      "date": "2026-08-18",
+      "notes": {
+        "zh-CN": [
+          "新增后台自动恢复探测：临时上游故障会在冷却结束后自动测试，半开探测失败仍使用原配置的固定冷却时间。"
+        ],
+        "en": [
+          "Added background circuit recovery probes for transient upstream failures while keeping the configured cooldown fixed after failed half-open probes."
+        ]
+      }
+    },
     {
       "version": "0.2.33",
       "date": "2026-08-18",
