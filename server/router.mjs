@@ -357,6 +357,7 @@ export class RouterEngine {
         () => attemptController.abort(new DOMException("连接上游超时", "TimeoutError")),
         provider.connect_timeout_ms,
       );
+      const clearConnectTimer = () => clearTimeout(connectTimer);
       const requestTimer = setTimeout(
         () => attemptController.abort(new RouterTimeoutError(
           "request_timeout",
@@ -369,14 +370,22 @@ export class RouterEngine {
         const secret = getSecret(this.dataDir, provider.id);
         const signal = AbortSignal.any([clientController.signal, attemptController.signal]);
         const targetEndpoint = protocolWrapped ? "responses" : upstreamEndpoint;
-        const timedFetch = await fetchWithNetworkTiming(responseEndpointUrl(provider.base_url, targetEndpoint), {
-          method: "POST",
-          headers: upstreamHeaders(req.headers, provider, secret, protocolWrapped ? "text/event-stream" : null),
-          body: JSON.stringify(upstreamBody),
-          signal,
-        });
+        const timedFetch = await fetchWithNetworkTiming(
+          responseEndpointUrl(provider.base_url, targetEndpoint),
+          {
+            method: "POST",
+            headers: upstreamHeaders(req.headers, provider, secret, protocolWrapped ? "text/event-stream" : null),
+            body: JSON.stringify(upstreamBody),
+            signal,
+          },
+          {
+            onConnected: clearConnectTimer,
+            onRequestSent: clearConnectTimer,
+            onBodySent: clearConnectTimer,
+          },
+        );
         upstream = timedFetch.response;
-        clearTimeout(connectTimer);
+        clearConnectTimer();
         const headersAt = new Date();
         this.updateAttempt(attemptId, {
           headers_at: headersAt.toISOString(),
@@ -390,7 +399,7 @@ export class RouterEngine {
         });
         this.emitRequest(requestId, "request.status_changed");
       } catch (error) {
-        clearTimeout(connectTimer);
+        clearConnectTimer();
         clearTimeout(requestTimer);
         error = effectiveAttemptError(error, attemptController);
         this.updateAttempt(attemptId, networkTimingForError(error) ?? {});
@@ -726,6 +735,7 @@ export class RouterEngine {
       () => attemptController.abort(new DOMException("连接上游超时", "TimeoutError")),
       provider.connect_timeout_ms,
     );
+    const clearConnectTimer = () => clearTimeout(connectTimer);
     const requestTimer = setTimeout(
       () => attemptController.abort(new RouterTimeoutError(
         "request_timeout",
@@ -737,14 +747,22 @@ export class RouterEngine {
     try {
       const secret = getSecret(this.dataDir, provider.id);
       const signal = AbortSignal.any([clientController.signal, attemptController.signal]);
-      const timedFetch = await fetchWithNetworkTiming(responsesUrl(provider.base_url), {
-        method: "POST",
-        headers: upstreamHeaders(req.headers, provider, secret),
-        body: JSON.stringify(upstreamBody),
-        signal,
-      });
+      const timedFetch = await fetchWithNetworkTiming(
+        responsesUrl(provider.base_url),
+        {
+          method: "POST",
+          headers: upstreamHeaders(req.headers, provider, secret),
+          body: JSON.stringify(upstreamBody),
+          signal,
+        },
+        {
+          onConnected: clearConnectTimer,
+          onRequestSent: clearConnectTimer,
+          onBodySent: clearConnectTimer,
+        },
+      );
       const upstream = timedFetch.response;
-      clearTimeout(connectTimer);
+      clearConnectTimer();
       const headersAt = new Date();
       const headersMs = Math.max(0, Math.round(performance.now() - attemptMono));
       this.updateAttempt(attemptId, {
@@ -767,7 +785,7 @@ export class RouterEngine {
         upstream,
       };
     } catch (error) {
-      clearTimeout(connectTimer);
+      clearConnectTimer();
       clearTimeout(requestTimer);
       error = effectiveAttemptError(error, attemptController);
       this.updateAttempt(attemptId, networkTimingForError(error) ?? {});

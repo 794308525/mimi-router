@@ -1,6 +1,34 @@
 {
-  "currentVersion": "0.2.19",
+  "currentVersion": "0.2.21",
   "releases": [
+    {
+      "version": "0.2.21",
+      "date": "2026-08-18",
+      "notes": {
+        "zh-CN": [
+          "修复复用上游连接在大请求体上传期间仍被连接超时误中断的问题：请求开始写入连接后立即停止连接计时器。",
+          "普通转发和同渠竞速均覆盖复用连接路径，并新增延迟上传回归测试。"
+        ],
+        "en": [
+          "Fixed reused upstream connections being interrupted by the connection timeout while a large request body was still uploading: the connection timer now stops as soon as the request starts writing to the connection.",
+          "Both normal forwarding and same-provider racing cover reused connections, with regression coverage for delayed uploads."
+        ]
+      }
+    },
+    {
+      "version": "0.2.20",
+      "date": "2026-08-18",
+      "notes": {
+        "zh-CN": [
+          "修复连接超时计时器覆盖响应头等待阶段的问题：连接建立或请求体发送后，不再因响应头较慢被误判为连接超时。",
+          "普通转发和同渠竞速路径统一使用真实网络阶段回调，保留总请求、首字和流式阶段超时；新增延迟响应头回归测试，避免误重试、误熔断及用量记录缺失。"
+        ],
+        "en": [
+          "Fixed the connection timeout timer from covering the response-header wait: once the connection is ready or the request body is sent, a slow response header is no longer misclassified as a connection timeout.",
+          "Normal forwarding and same-provider racing now share real network-phase callbacks while preserving total-request, first-token, and streaming timeouts; regression coverage prevents unnecessary retries, circuit penalties, and missing usage records."
+        ]
+      }
+    },
     {
       "version": "0.2.19",
       "date": "2026-08-17",

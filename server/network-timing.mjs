@@ -33,6 +33,14 @@ channel("undici:client:connected").subscribe(() => {
   if (!timing) return;
   timing.connectedMono = performance.now();
   timing.networkConnectMs = elapsed(timing.connectStartedMono, timing.connectedMono);
+  timing.onConnected?.();
+});
+
+channel("undici:client:sendHeaders").subscribe(({ request }) => {
+  const timing = currentTiming(request);
+  if (!timing) return;
+  if (timing.connectionReused == null) timing.connectionReused = 1;
+  timing.onRequestSent?.();
 });
 
 channel("undici:client:connectError").subscribe(() => {
@@ -52,6 +60,7 @@ channel("undici:request:bodySent").subscribe(({ request }) => {
     timing.connectedMono ?? timing.requestCreatedMono ?? timing.fetchStartedMono,
     sentMono,
   );
+  timing.onBodySent?.();
 });
 
 channel("undici:request:headers").subscribe(({ request }) => {
@@ -70,7 +79,7 @@ function snapshot(timing) {
   };
 }
 
-export async function fetchWithNetworkTiming(url, init) {
+export async function fetchWithNetworkTiming(url, init, hooks = {}) {
   const timing = {
     fetchStartedMono: performance.now(),
     connectionReused: null,
@@ -82,6 +91,9 @@ export async function fetchWithNetworkTiming(url, init) {
     networkConnectMs: null,
     requestUploadMs: null,
     upstreamWaitMs: null,
+    onConnected: hooks.onConnected,
+    onRequestSent: hooks.onRequestSent,
+    onBodySent: hooks.onBodySent,
   };
   try {
     const response = await timingStorage.run(timing, () => fetch(url, init));

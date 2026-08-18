@@ -2,6 +2,16 @@
 
 This project follows semantic versioning. Every feature update must keep the application version and both language variants of the release notes in sync.
 
+## 0.2.21 - 2026-08-18
+
+- Fixed reused upstream connections being interrupted by the connection timeout while a large request body was still uploading: the connection timer now stops as soon as the request starts writing to the connection.
+- Both normal forwarding and same-provider racing cover reused connections, with regression coverage for delayed uploads.
+
+## 0.2.20 - 2026-08-18
+
+- Fixed the connection timeout timer from covering the response-header wait: once the connection is ready or the request body is sent, a slow response header is no longer misclassified as a connection timeout.
+- Normal forwarding and same-provider racing now share real network-phase callbacks while preserving total-request, first-token, and streaming timeouts; regression coverage prevents unnecessary retries, circuit penalties, and missing usage records.
+
 ## 0.2.19 - 2026-08-17
 
 - Streaming requests now use phase-aware timeouts: first-token handling remains unchanged, while streams stop after 20 seconds without upstream data or 40 seconds without meaningful progress, with a 900-second total safety limit.

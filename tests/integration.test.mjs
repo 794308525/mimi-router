@@ -1403,6 +1403,95 @@ test("returns an OpenAI error when a wrapped non-stream Chat response fails afte
   }
 });
 
+test("keeps waiting for response headers after the upstream connection is ready", async () => {
+  const provider = await post("/api/providers", {
+    name: "Delayed response headers",
+    base_url: `http://127.0.0.1:${mockPort}/delayed-headers/v1`,
+    default_model: "gpt-5.6-sol",
+    connect_timeout_ms: 50,
+    request_timeout_ms: 2000,
+  });
+  const routes = await get("/api/routes");
+  const group = routes.groups[0];
+  try {
+    await put(`/api/route-groups/${group.id}`, {
+      ...group,
+      failover_enabled: false,
+      max_attempts: 1,
+      members: [{ provider_id: provider.id, priority: 1, weight: 100, enabled: true }],
+    });
+
+    const response = await fetch(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.6-sol", input: "delayed headers", stream: true }),
+    });
+    const requestId = response.headers.get("x-codex-router-request-id");
+    assert.ok(requestId);
+    assert.equal(response.status, 200);
+    assert.match(await response.text(), /response\.completed/);
+
+    const detail = await waitForRequest(requestId, (request) => request.status === "completed");
+    assert.equal(detail.error_category, null);
+    assert.equal(detail.input_tokens, 12);
+    assert.equal(detail.output_tokens, 5);
+    assert.ok(Number.isInteger(detail.request_upload_ms));
+    assert.ok(detail.upstream_wait_ms >= 150);
+  } finally {
+    await put(`/api/route-groups/${group.id}`, group);
+    await send("DELETE", `/api/providers/${provider.id}`, {});
+  }
+});
+
+test("keeps a delayed-header race attempt alive after it connects", async () => {
+  const provider = await post("/api/providers", {
+    name: "Delayed race response headers",
+    base_url: `http://127.0.0.1:${mockPort}/delayed-header-race/v1`,
+    default_model: "gpt-5.6-sol",
+    connect_timeout_ms: 50,
+    request_timeout_ms: 2000,
+  });
+  const routes = await get("/api/routes");
+  const group = routes.groups[0];
+  try {
+    await put(`/api/route-groups/${group.id}`, {
+      ...group,
+      max_attempts: 2,
+      members: [{ provider_id: provider.id, priority: 1, weight: 100, enabled: true }],
+    });
+    await put("/api/router-settings", {
+      first_token_timeout_policy: "fixed",
+      first_token_timeout_ms: 60,
+      first_token_timeout_mode: "race_same",
+    });
+
+    const response = await fetch(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.6-sol", input: "delayed race headers", stream: true }),
+    });
+    const requestId = response.headers.get("x-codex-router-request-id");
+    assert.ok(requestId);
+    assert.equal(response.status, 200);
+    assert.match(await response.text(), /response\.completed/);
+
+    const detail = await waitForRequest(requestId, (request) => request.status === "completed");
+    assert.equal(detail.attempt_count, 2);
+    assert.equal(detail.race_triggered, 1);
+    assert.equal(detail.race_winner_sequence, 2);
+    assert.equal(detail.attempts.some((attempt) => attempt.error_category === "timeout"), false);
+    assert.ok(detail.attempts[1].upstream_wait_ms >= 120);
+  } finally {
+    await put("/api/router-settings", {
+      first_token_timeout_policy: "off",
+      first_token_timeout_ms: 30000,
+      first_token_timeout_mode: "retry_then_switch",
+    });
+    await put(`/api/route-groups/${group.id}`, group);
+    await send("DELETE", `/api/providers/${provider.id}`, {});
+  }
+});
+
 async function get(path) {
   const response = await fetch(`http://127.0.0.1:${gatewayPort}${path}`);
   const text = await response.text();

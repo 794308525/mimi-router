@@ -5,6 +5,7 @@ let sameRaceCalls = 0;
 let unsafeRaceCalls = 0;
 let recoverEarlyCalls = 0;
 let recoverLateCalls = 0;
+let delayedHeaderRaceCalls = 0;
 const chatRequestCounts = new Map();
 
 const server = createServer((req, res) => {
@@ -394,8 +395,15 @@ const server = createServer((req, res) => {
     }
     const sameRaceCall = req.url?.includes("/same-race/") ? ++sameRaceCalls : 0;
     const unsafeRaceCall = req.url?.includes("/unsafe-race/") ? ++unsafeRaceCalls : 0;
-    const headerDelay = req.url?.includes("/fast/") || sameRaceCall || unsafeRaceCall ? 10 : 220;
-    const firstOutputDelay = sameRaceCall
+    const delayedHeaderRaceCall = req.url?.includes("/delayed-header-race/") ? ++delayedHeaderRaceCalls : 0;
+    const headerDelay = req.url?.includes("/delayed-headers/")
+      ? 220
+      : delayedHeaderRaceCall
+        ? (delayedHeaderRaceCall === 1 ? 10 : 180)
+        : req.url?.includes("/fast/") || sameRaceCall || unsafeRaceCall ? 10 : 220;
+    const firstOutputDelay = delayedHeaderRaceCall
+      ? (delayedHeaderRaceCall === 1 ? 350 : 20)
+      : sameRaceCall
       ? (sameRaceCall === 1 ? 220 : 20)
       : unsafeRaceCall
         ? (unsafeRaceCall === 1 ? 220 : 20)
