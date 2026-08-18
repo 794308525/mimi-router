@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 
@@ -61,8 +62,9 @@ export function useAppUpdater(): AppUpdater {
     setStatus("downloading");
     setError("");
     setProgress(null);
+    let gatewayStopped = false;
     try {
-      await update.downloadAndInstall((event) => {
+      await update.download((event) => {
         if (event.event === "Started") {
           contentLength = event.data.contentLength;
           setProgress(contentLength ? 0 : null);
@@ -74,8 +76,14 @@ export function useAppUpdater(): AppUpdater {
         }
       });
       setStatus("restarting");
+      await invoke("prepare_for_update");
+      gatewayStopped = true;
+      await update.install();
       await relaunch();
     } catch (installError) {
+      if (gatewayStopped) {
+        await invoke("resume_gateway_after_update_failure").catch(() => undefined);
+      }
       setError(errorMessage(installError, "更新安装失败"));
       setStatus("error");
     }

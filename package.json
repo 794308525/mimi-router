@@ -1,6 +1,6 @@
 {
   "name": "codex-relay-router",
-  "version": "0.2.21",
+  "version": "0.2.28",
   "description": "本地优先的 Responses API 智能路由网关与桌面管理工具",
   "private": true,
   "type": "module",
@@ -16,7 +16,8 @@
     "test": "node --test tests/*.test.mjs"
   },
   "dependencies": {
-    "@tauri-apps/plugin-opener": "^2.5.4",
+    "@tauri-apps/api": "2.10.1",
+    "@tauri-apps/plugin-opener": "2.5.3",
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.10.1",
     "lucide-react": "^0.542.0",

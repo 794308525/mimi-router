@@ -4,6 +4,7 @@ import { api } from "../api";
 import type { Notice, Provider, RequestRecord, RouteGroup, RouterSettings, ServiceInfo, Stats } from "../types";
 import { ACTIVE_REQUEST_STATES } from "../types";
 import { buildTtftBaselines, firstTokenDisplay, ttftBaselineKey } from "../ttft";
+import { RequestDetail } from "./Requests";
 import {
   EmptyState,
   ElapsedTime,
@@ -34,6 +35,8 @@ export function Overview({
   routerSettings,
   onNavigate,
   onOpenRequest,
+  initialDetail,
+  onDetailClosed,
   setNotice,
 }: {
   service: ServiceInfo;
@@ -44,6 +47,8 @@ export function Overview({
   routerSettings: RouterSettings;
   onNavigate: (page: string) => void;
   onOpenRequest: (request: RequestRecord) => void;
+  initialDetail: RequestRecord | null;
+  onDetailClosed: () => void;
   setNotice: (notice: Notice) => void;
 }) {
   const [visibleTrendMetrics, setVisibleTrendMetrics] = useState<TrendMetric[]>(() => TREND_METRICS.map(([metric]) => metric));
@@ -63,6 +68,8 @@ export function Overview({
   const [savingRouterAuth, setSavingRouterAuth] = useState(false);
   const [resettingRouterApiKey, setResettingRouterApiKey] = useState(false);
   const [showResetRouterApiKey, setShowResetRouterApiKey] = useState(false);
+  const [detail, setDetail] = useState<RequestRecord | null>(initialDetail);
+  const [loadingDetail, setLoadingDetail] = useState(false);
 
   useEffect(() => {
     setFirstTokenSeconds(String(routerSettings.first_token_timeout_ms / 1000));
@@ -85,6 +92,53 @@ export function Overview({
       });
     return () => { cancelled = true; };
   }, [setNotice]);
+
+  useEffect(() => {
+    if (!initialDetail) {
+      setDetail(null);
+      setLoadingDetail(false);
+      return;
+    }
+    let cancelled = false;
+    setDetail(initialDetail);
+    setLoadingDetail(true);
+    void api.requestDetail(initialDetail.id)
+      .then((fresh) => {
+        if (!cancelled) setDetail(fresh);
+      })
+      .catch((error) => {
+        if (!cancelled) setNotice({ type: "error", message: error instanceof Error ? error.message : "详情加载失败" });
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingDetail(false);
+      });
+    return () => { cancelled = true; };
+  }, [initialDetail, setNotice]);
+
+  useEffect(() => {
+    if (!detail) return;
+    const latest = requests.find((request) => request.id === detail.id);
+    if (!latest) return;
+    const wasRunning = ACTIVE_REQUEST_STATES.has(detail.status);
+    const isFinished = !ACTIVE_REQUEST_STATES.has(latest.status);
+    setDetail((current) => current && current.id === latest.id
+      ? { ...current, ...latest, attempts: latest.attempts ?? current.attempts }
+      : current);
+    if (!wasRunning || !isFinished) return;
+    let cancelled = false;
+    setLoadingDetail(true);
+    void api.requestDetail(detail.id)
+      .then((fresh) => {
+        if (!cancelled) setDetail(fresh);
+      })
+      .catch((error) => {
+        if (!cancelled) setNotice({ type: "error", message: error instanceof Error ? error.message : "详情刷新失败" });
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingDetail(false);
+      });
+    return () => { cancelled = true; };
+  }, [detail?.id, detail?.status, requests, setNotice]);
   const active = requests.filter((request) => ACTIVE_REQUEST_STATES.has(request.status));
   const summary = stats.periods?.[summaryRange] ?? stats.summary;
   const trendRange = summaryRange === "seven_days" ? "7d" : summaryRange;
@@ -203,6 +257,11 @@ export function Overview({
     } finally {
       setCancellingId(null);
     }
+  };
+
+  const closeDetail = () => {
+    setDetail(null);
+    onDetailClosed();
   };
 
   const saveFirstTokenSettings = async (patch: Partial<RouterSettings>) => {
@@ -648,6 +707,9 @@ export function Overview({
                   <td>
                     <button className="usage-record-link" type="button" onClick={() => onOpenRequest(request)}>
                       <ModelRuntime requestedModel={request.requested_model} actualModel={request.actual_upstream_model} reasoningEffort={request.reasoning_effort} providerName={providerNamesVisible ? request.provider_name : null} />
+                      <small className="record-routing-meta">
+                        {request.attempt_count > 1 && <>尝试 {request.attempt_count} 次 · </>}最终 {providerNamesVisible ? (request.provider_name || "未选择") : "渠道已隐藏"}
+                      </small>
                     </button>
                   </td>
                   <td><TokenStack input={request.input_tokens} cached={request.cached_tokens} output={request.output_tokens} /></td>
@@ -670,6 +732,11 @@ export function Overview({
         <div><Clock3 size={17} /><span>服务启动</span><strong>{formatTime(service.started_at)}</strong></div>
       </section>
 
+      {detail && (
+        <Modal title="请求详情" description={`ID ${detail.id}`} onClose={closeDetail} wide closeOnBackdrop>
+          <RequestDetail request={detail} loading={loadingDetail} baseline={ttftBaselines.get(ttftBaselineKey(detail))} onCancel={() => void cancelRequest(detail)} />
+        </Modal>
+      )}
       {showFirstTokenHelp && (
         <Modal
           title="首字超时切换"

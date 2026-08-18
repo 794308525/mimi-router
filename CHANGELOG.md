@@ -2,6 +2,35 @@
 
 This project follows semantic versioning. Every feature update must keep the application version and both language variants of the release notes in sync.
 
+## 0.2.28 - 2026-08-18
+
+- Request detail dialogs can now be closed by clicking the surrounding backdrop without changing confirmation-dialog behavior.
+
+## 0.2.27 - 2026-08-18
+
+- Dashboard records now omit the redundant attempt count when a request used only one upstream attempt.
+
+## 0.2.26 - 2026-08-18
+
+- Request details opened from the dashboard now stay in the dashboard, show attempt and final-provider information, and stop their live timer as soon as the request reaches a terminal state.
+
+## 0.2.25 - 2026-08-18
+
+- HTTP `200` stream failure events without a specific classification code are now retried as upstream semantic failures, still bounded by the provider and route-group retry settings.
+
+## 0.2.24 - 2026-08-18
+
+- Based on production request records, HTTP `200` failure events containing `Upstream request failed` or WebSocket `1006 unexpected EOF` now retry as transient server failures.
+
+## 0.2.23 - 2026-08-18
+
+- Treat `openai_error` events inside HTTP `200` upstream streams as transient server failures so configured retries and failover can proceed.
+
+## 0.2.22 - 2026-08-18
+
+- Adaptive first-token previews now refresh as soon as a new eligible request completes, while the cached value for that provider and model is invalidated.
+- Windows online updates now stop the bundled Node gateway after downloading and before launching the installer, with an installer-side targeted cleanup to prevent `node.exe` file-lock failures.
+
 ## 0.2.21 - 2026-08-18
 
 - Fixed reused upstream connections being interrupted by the connection timeout while a large request body was still uploading: the connection timer now stops as soon as the request starts writing to the connection.

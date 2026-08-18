@@ -14,7 +14,7 @@ use std::{
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    App, AppHandle, Manager, RunEvent,
+    AppHandle, Manager, RunEvent,
 };
 
 #[derive(Default)]
@@ -65,7 +65,7 @@ fn append_gateway_log(app: &AppHandle, message: &str) {
     }
 }
 
-fn start_gateway(app: &App) -> Result<(), Box<dyn std::error::Error>> {
+fn start_gateway(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     if gateway_ready() {
         return Ok(());
     }
@@ -170,15 +170,43 @@ fn wait_for_gateway(app: AppHandle) {
     });
 }
 
-fn stop_gateway(app: &AppHandle) {
+fn stop_gateway(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<GatewayProcess>();
-    let Ok(mut process) = state.0.lock() else {
-        return;
-    };
+    let mut process = state
+        .0
+        .lock()
+        .map_err(|_| "本地网关进程状态锁异常".to_string())?;
     if let Some(mut child) = process.take() {
-        let _ = child.kill();
-        let _ = child.wait();
+        match child.try_wait() {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) => {
+                if let Err(error) = child.kill() {
+                    if !matches!(child.try_wait(), Ok(Some(_))) {
+                        return Err(format!("停止本地网关失败: {error}"));
+                    }
+                    return Ok(());
+                }
+            }
+            Err(error) => return Err(format!("读取本地网关状态失败: {error}")),
+        }
+        child
+            .wait()
+            .map_err(|error| format!("等待本地网关退出失败: {error}"))?;
     }
+    Ok(())
+}
+
+#[tauri::command]
+fn prepare_for_update(app: AppHandle) -> Result<(), String> {
+    append_gateway_log(&app, "准备安装更新，正在停止本地网关");
+    stop_gateway(&app)?;
+    append_gateway_log(&app, "本地网关已停止，可以安装更新");
+    Ok(())
+}
+
+#[tauri::command]
+fn resume_gateway_after_update_failure(app: AppHandle) -> Result<(), String> {
+    start_gateway(&app).map_err(|error| error.to_string())
 }
 
 fn main() {
@@ -187,6 +215,10 @@ fn main() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(GatewayProcess::default())
+        .invoke_handler(tauri::generate_handler![
+            prepare_for_update,
+            resume_gateway_after_update_failure,
+        ])
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "打开咪咪 Router", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
@@ -220,7 +252,7 @@ fn main() {
             if cfg!(debug_assertions) {
                 show_main_window(app.handle());
             } else {
-                if let Err(error) = start_gateway(app) {
+                if let Err(error) = start_gateway(app.handle()) {
                     append_gateway_log(app.handle(), &format!("本地网关启动失败: {error}"));
                     eprintln!("[desktop] 本地网关启动失败: {error}");
                     show_main_window(app.handle());
@@ -241,7 +273,7 @@ fn main() {
 
     app.run(|app, event| {
         if matches!(event, RunEvent::Exit) {
-            stop_gateway(app);
+            let _ = stop_gateway(app);
         }
     });
 }

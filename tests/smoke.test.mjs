@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { applyRouteMemberPriorities, createDatabase, getAdaptiveFirstTokenTimeout, getAdaptiveFirstTokenTimeoutPreview, getPricingCatalog, getRouterSettings, getStats, listRoutes, pruneExpiredDiagnostics, pruneExpiredRequests, resolveModelPricing, saveOfficialPricing, saveProvider, saveRouteGroup, saveRouteRule, saveRouterSettings } from "../server/db.mjs";
 import { DEFAULT_MODEL, DEFAULT_TEST_MODEL } from "../server/constants.mjs";
 import { codexSnippet } from "../server/codex-config.mjs";
+import { RouterEngine } from "../server/router.mjs";
 
 let db;
 let directory;
@@ -335,6 +336,36 @@ test("derives adaptive first-token timeouts from normal single-attempt P75 sampl
   assert.equal(fallback.baseline_type, "p75");
   assert.equal(fallback.timeout_ms, 28000);
   assert.equal(fallback.source, "fallback");
+});
+
+test("invalidates the adaptive first-token cache when a new eligible sample completes", () => {
+  const provider = saveProvider(db, {
+    name: "Adaptive cache upstream",
+    base_url: "http://127.0.0.1:19992/v1",
+  });
+  const requestId = "adaptive-cache-sample";
+  const requestedModel = "adaptive-cache-model";
+  const startedAt = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO requests (
+      id, started_at, status, requested_model, final_provider_id, ttft_ms,
+      attempt_count, is_failover, race_triggered
+    ) VALUES (?, ?, 'streaming', ?, ?, 4200, 1, 0, 0)
+  `).run(requestId, startedAt, requestedModel, provider.id);
+
+  const events = [];
+  const engine = new RouterEngine(db, directory, (type, payload) => events.push({ type, payload }));
+  const affectedKey = `${provider.id}\u0000${requestedModel}\u000030000`;
+  const unrelatedKey = `${provider.id}\u0000other-model\u000030000`;
+  engine.firstTokenTimeoutCache.set(affectedKey, { timeoutMs: 10000, expiresAt: Date.now() + 60000 });
+  engine.firstTokenTimeoutCache.set(unrelatedKey, { timeoutMs: 10000, expiresAt: Date.now() + 60000 });
+
+  engine.finishRequest(requestId, performance.now(), { status: "completed" });
+
+  assert.equal(engine.firstTokenTimeoutCache.has(affectedKey), false);
+  assert.equal(engine.firstTokenTimeoutCache.has(unrelatedKey), true);
+  assert.equal(events.at(-1)?.type, "request.finished");
+  assert.equal(events.at(-1)?.payload.request.status, "completed");
 });
 
 test("aggregates cache hit rates from known usage with an input-weighted denominator", () => {

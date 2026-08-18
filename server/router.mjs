@@ -27,6 +27,7 @@ const RETRYABLE_SEMANTIC_CATEGORIES = new Set([
   "capacity",
   "rate_limit",
   "server_error",
+  "upstream_semantic_failure",
   "vector_store_timeout",
 ]);
 const SAME_PROVIDER_RETRY_HTTP_STATUSES = new Set([
@@ -1845,6 +1846,16 @@ export class RouterEngine {
     return adaptive.timeout_ms;
   }
 
+  invalidateFirstTokenTimeoutCache(request) {
+    if (request?.status !== "completed" || request.attempt_count !== 1 || request.is_failover !== 0
+      || request.race_triggered !== 0 || request.ttft_ms == null || !request.final_provider_id
+      || !request.requested_model) return;
+    const prefix = `${request.final_provider_id}\u0000${request.requested_model}\u0000`;
+    for (const cacheKey of this.firstTokenTimeoutCache.keys()) {
+      if (cacheKey.startsWith(prefix)) this.firstTokenTimeoutCache.delete(cacheKey);
+    }
+  }
+
   acquireProvider(providerId) {
     this.inFlight.set(providerId, (this.inFlight.get(providerId) ?? 0) + 1);
   }
@@ -2289,7 +2300,9 @@ export class RouterEngine {
       ...sampleFields,
       ...fields,
     });
-    this.emitRequest(id, "request.finished");
+    const request = getRequest(this.db, id);
+    this.invalidateFirstTokenTimeoutCache(request);
+    this.publish("request.finished", { request });
   }
 
   emitRequest(id, event) {
@@ -2515,9 +2528,10 @@ function semanticFailureFromPayload(payload, status) {
   const type = String(payload?.type || "");
   const response = payload?.response ?? payload;
   const error = payload?.error ?? response?.error;
-  const code = String(error?.code || payload?.code || response?.code || "");
+  const errorType = String(error?.type || payload?.error_type || response?.error_type || "");
+  const code = String(error?.code || payload?.code || response?.code || (type === "openai_error" ? type : ""));
   const failedStatus = ["failed", "cancelled"].includes(String(response?.status || ""));
-  if (!failedStatus && type !== "response.failed" && type !== "error" && !error) return null;
+  if (!failedStatus && !["response.failed", "error", "openai_error"].includes(type) && !error) return null;
   const message = String(
     error?.message
       || (typeof error === "string" ? error : "")
@@ -2525,7 +2539,7 @@ function semanticFailureFromPayload(payload, status) {
       || response?.message
       || (failedStatus ? `Responses upstream ${response.status}` : "Responses upstream emitted an error before output"),
   );
-  const category = sameProviderRetryCategory(status, message, code) || "upstream_semantic_failure";
+  const category = sameProviderRetryCategory(status, message, code, errorType) || "upstream_semantic_failure";
   const errorStatus = status >= 400 ? status : category === "rate_limit" ? 429 : category === "capacity" ? 503 : 502;
   return new UpstreamSemanticFailureError(errorStatus, message, category, code);
 }
@@ -2571,6 +2585,10 @@ function isTransientGatewayError(message) {
   return /(?:\b(?:408|425|502|503|504|52[0-7])\b|bad\s+gateway|service\s+unavailable|gateway\s+time(?:d?\s*out|out)|a\s+timeout\s+occurred|connection\s+timed\s+out|web\s+server\s+is\s+down|origin\s+is\s+unreachable|ssl\s+handshake\s+failed)/i.test(String(message || ""));
 }
 
+function isTransientSemanticTransportError(message) {
+  return /(?:^upstream\s+request\s+failed$|websocket:\s*close\s+1006\b|unexpected\s+eof)/i.test(String(message || "").trim());
+}
+
 function isTransientHtmlGatewayResponse(response, body) {
   if (response.status !== 400) return false;
   const contentType = response.headers.get("content-type") || "";
@@ -2579,12 +2597,16 @@ function isTransientHtmlGatewayResponse(response, body) {
   return /(?:cloudflare|cdn-cgi|cf-error-details|nginx|openresty)/i.test(gatewayEvidence);
 }
 
-function sameProviderRetryCategory(status, message, code = "") {
-  if (status === 429 || code === "rate_limit_exceeded" || isRateLimitError(message)) return "rate_limit";
-  if (code === "server_error") return "server_error";
-  if (code === "vector_store_timeout") return "vector_store_timeout";
+function sameProviderRetryCategory(status, message, code = "", errorType = "") {
+  const normalizedCode = String(code).toLowerCase();
+  const normalizedErrorType = String(errorType).toLowerCase();
+  if (status === 429 || normalizedCode === "rate_limit_exceeded" || isRateLimitError(message)) return "rate_limit";
+  if (["server_error", "openai_error"].includes(normalizedCode)
+    || ["server_error", "openai_error"].includes(normalizedErrorType)) return "server_error";
+  if (normalizedCode === "vector_store_timeout") return "vector_store_timeout";
   if (isCapacityError(message)) return "capacity";
-  if (SAME_PROVIDER_RETRY_HTTP_STATUSES.has(status) || isTransientGatewayError(message)) return "server_error";
+  if (SAME_PROVIDER_RETRY_HTTP_STATUSES.has(status) || isTransientGatewayError(message)
+    || isTransientSemanticTransportError(message)) return "server_error";
   return null;
 }
 
@@ -3061,7 +3083,8 @@ function chatCompatibilityErrorBody(error, requestId) {
 function bridgeFailureError(failure, status) {
   const message = String(failure?.message || "Responses upstream failed");
   const code = String(failure?.code || "");
-  const category = sameProviderRetryCategory(status, message, code) || "upstream_semantic_failure";
+  const errorType = String(failure?.type || "");
+  const category = sameProviderRetryCategory(status, message, code, errorType) || "upstream_semantic_failure";
   const errorStatus = status >= 400 ? status : category === "rate_limit" ? 429 : category === "capacity" ? 503 : 502;
   const error = new UpstreamSemanticFailureError(errorStatus, message, category, code);
   error.streamPhase = "failed";

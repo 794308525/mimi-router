@@ -101,6 +101,31 @@ export function RequestsPage({
       .finally(() => setLoadingDetail(false));
   }, [initialDetail, setNotice]);
 
+  useEffect(() => {
+    if (!detail) return;
+    const latest = requests.find((request) => request.id === detail.id);
+    if (!latest) return;
+    const wasRunning = ACTIVE_REQUEST_STATES.has(detail.status);
+    const isFinished = !ACTIVE_REQUEST_STATES.has(latest.status);
+    setDetail((current) => current && current.id === latest.id
+      ? { ...current, ...latest, attempts: latest.attempts ?? current.attempts }
+      : current);
+    if (!wasRunning || !isFinished) return;
+    let cancelled = false;
+    setLoadingDetail(true);
+    void api.requestDetail(detail.id)
+      .then((fresh) => {
+        if (!cancelled) setDetail(fresh);
+      })
+      .catch((error) => {
+        if (!cancelled) setNotice({ type: "error", message: error instanceof Error ? error.message : "详情刷新失败" });
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingDetail(false);
+      });
+    return () => { cancelled = true; };
+  }, [detail?.id, detail?.status, requests, setNotice]);
+
   const ttftBaselines = useMemo(() => buildTtftBaselines(records), [records]);
 
   const openDetail = async (request: RequestRecord) => {
@@ -228,7 +253,7 @@ export function RequestsPage({
       </nav>
 
       {detail && (
-        <Modal title="请求详情" description={`ID ${detail.id}`} onClose={closeDetail} wide>
+        <Modal title="请求详情" description={`ID ${detail.id}`} onClose={closeDetail} wide closeOnBackdrop>
           <RequestDetail request={detail} loading={loadingDetail} baseline={ttftBaselines.get(ttftBaselineKey(detail))} onCancel={() => cancel(detail)} />
         </Modal>
       )}
@@ -236,7 +261,7 @@ export function RequestsPage({
   );
 }
 
-function RequestDetail({
+export function RequestDetail({
   request,
   loading,
   baseline,

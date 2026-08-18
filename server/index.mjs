@@ -150,6 +150,9 @@ async function handleApi(req, res, url) {
     publish("router.settings_changed", { settings });
     return json(res, 200, settings);
   }
+  if (req.method === "GET" && url.pathname === "/api/router-settings") {
+    return json(res, 200, managementRouterSettings());
+  }
 
   if (req.method === "GET" && url.pathname === "/api/router-auth/key") {
     if (!isLocalManagementRequest(req)) return json(res, 403, { error: "网关 API Key 仅允许在本机查看" });

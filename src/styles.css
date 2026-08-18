@@ -295,6 +295,7 @@ code { font-family: "SFMono-Regular", Consolas, monospace; }
 .usage-record-link strong { color: var(--text); font-size: 11px; }
 .usage-record-link small { width: 100%; max-width: 240px; margin-top: 3px; color: var(--faint); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .usage-record-link .model-runtime-meta { color: var(--muted); }
+.usage-record-link .record-routing-meta { color: var(--faint); }
 .usage-record-link:hover .model-runtime:not(.is-changed) .model-runtime-line { color: var(--accent); }
 .overview-records-table th, .overview-records-table td { padding-left: 10px; padding-right: 10px; }
 .overview-records-table th:first-child, .overview-records-table td:first-child { padding-left: 16px; }

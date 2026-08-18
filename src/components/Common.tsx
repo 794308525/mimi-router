@@ -64,6 +64,7 @@ export function Modal({
   onClose,
   wide = false,
   className = "",
+  closeOnBackdrop = false,
 }: {
   title: string;
   description?: string;
@@ -71,9 +72,10 @@ export function Modal({
   onClose: () => void;
   wide?: boolean;
   className?: string;
+  closeOnBackdrop?: boolean;
 }) {
   return (
-    <div className="modal-backdrop" role="presentation">
+    <div className="modal-backdrop" role="presentation" onMouseDown={closeOnBackdrop ? onClose : undefined}>
       <section
         className={`modal ${wide ? "modal-wide" : ""} ${className}`.trim()}
         role="dialog"

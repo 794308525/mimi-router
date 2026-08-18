@@ -195,6 +195,13 @@ test("enforces OpenAI-compatible bearer authentication when enabled", async () =
   }
 });
 
+test("returns the current router settings with an adaptive preview", async () => {
+  const settings = await get("/api/router-settings");
+  assert.equal(typeof settings.first_token_timeout_policy, "string");
+  assert.equal(typeof settings.first_token_timeout_ms, "number");
+  assert.equal(typeof settings.adaptive_first_token_preview.timeout_ms, "number");
+});
+
 test("routes compact requests and skips providers that do not support the endpoint", async () => {
   const unsupported = await post("/api/providers", {
     name: "Compact unsupported",
@@ -493,6 +500,10 @@ for (const scenario of [
   { name: "an HTTP 200 semantic 429 failure", path: "semantic-rate-limit", category: "rate_limit" },
   { name: "an HTTP 200 top-level rate-limit error", path: "top-level-rate-limit", category: "rate_limit" },
   { name: "an HTTP 200 server error", path: "semantic-server-error", category: "server_error" },
+  { name: "an HTTP 200 openai_error", path: "semantic-openai-error", category: "server_error" },
+  { name: "an HTTP 200 generic upstream failure", path: "semantic-upstream-failed", category: "server_error" },
+  { name: "an HTTP 200 WebSocket 1006 EOF", path: "semantic-websocket-eof", category: "server_error" },
+  { name: "an HTTP 200 unknown upstream failure", path: "semantic-unknown", category: "upstream_semantic_failure" },
   { name: "an HTTP 200 vector-store timeout", path: "top-level-vector-timeout", category: "vector_store_timeout" },
 ]) {
   test(`retries ${scenario.name} on the same provider before failing over`, async () => {

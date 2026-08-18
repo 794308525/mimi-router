@@ -79,6 +79,7 @@ export const api = {
   },
   requestDetail: (id: string) => request<RequestRecord>(`/api/requests/${id}`),
   cancelRequest: (id: string) => request<{ ok: boolean }>(`/api/requests/${id}/cancel`, { method: "POST" }),
+  routerSettings: () => request<RouterSettings>("/api/router-settings"),
   updateRouterSettings: (body: Partial<RouterSettings>) =>
     request<RouterSettings>("/api/router-settings", { method: "PUT", body: JSON.stringify(body) }),
   routerAuthKey: () => request<{ api_key: string }>("/api/router-auth/key"),

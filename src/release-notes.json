@@ -1,6 +1,92 @@
 {
-  "currentVersion": "0.2.21",
+  "currentVersion": "0.2.28",
   "releases": [
+    {
+      "version": "0.2.28",
+      "date": "2026-08-18",
+      "notes": {
+        "zh-CN": [
+          "请求详情弹窗支持点击周围蒙版关闭，其他确认弹窗行为保持不变。"
+        ],
+        "en": [
+          "Request detail dialogs can now be closed by clicking the surrounding backdrop without changing confirmation-dialog behavior."
+        ]
+      }
+    },
+    {
+      "version": "0.2.27",
+      "date": "2026-08-18",
+      "notes": {
+        "zh-CN": [
+          "首页记录在请求仅尝试一次时不再重复显示尝试次数。"
+        ],
+        "en": [
+          "Dashboard records now omit the redundant attempt count when a request used only one upstream attempt."
+        ]
+      }
+    },
+    {
+      "version": "0.2.26",
+      "date": "2026-08-18",
+      "notes": {
+        "zh-CN": [
+          "首页查看请求详情时保持在首页，并显示尝试次数和最终中转；详情会跟随请求终态停止实时计时。"
+        ],
+        "en": [
+          "Dashboard request details now stay on the dashboard, show attempt and final-provider information, and stop the live timer when the request reaches a terminal state."
+        ]
+      }
+    },
+    {
+      "version": "0.2.25",
+      "date": "2026-08-18",
+      "notes": {
+        "zh-CN": [
+          "上游在 HTTP 200 流中返回但未带明确可分类 code 的失败事件，也会按上游语义失败自动重试；重试次数仍受渠道和路由组设置限制。"
+        ],
+        "en": [
+          "HTTP 200 stream failure events without a specific classification code are now retried as upstream semantic failures, still bounded by the provider and route-group retry settings."
+        ]
+      }
+    },
+    {
+      "version": "0.2.24",
+      "date": "2026-08-18",
+      "notes": {
+        "zh-CN": [
+          "根据正式运行记录，将上游 HTTP 200 失败事件中的 Upstream request failed 和 WebSocket 1006 unexpected EOF 识别为临时服务错误并自动重试。"
+        ],
+        "en": [
+          "Based on production request records, HTTP 200 failure events containing Upstream request failed or WebSocket 1006 unexpected EOF now retry as transient server failures."
+        ]
+      }
+    },
+    {
+      "version": "0.2.23",
+      "date": "2026-08-18",
+      "notes": {
+        "zh-CN": [
+          "将上游 HTTP 200 流中的 openai_error 识别为临时服务错误，按配置自动重试并在必要时故障转移。"
+        ],
+        "en": [
+          "Treat openai_error events inside HTTP 200 upstream streams as transient server failures so configured retries and failover can proceed."
+        ]
+      }
+    },
+    {
+      "version": "0.2.22",
+      "date": "2026-08-18",
+      "notes": {
+        "zh-CN": [
+          "自动均衡的参考时限会在符合条件的新请求完成后立即刷新，并清除对应渠道与模型的旧计算缓存。",
+          "Windows 在线更新改为下载完成后先停止内置 Node 网关再启动安装器，安装器也会定向清理旧运行时进程，避免 node.exe 被占用导致覆盖失败。"
+        ],
+        "en": [
+          "Adaptive first-token previews now refresh as soon as a new eligible request completes, while the cached value for that provider and model is invalidated.",
+          "Windows online updates now stop the bundled Node gateway after downloading and before launching the installer, with an installer-side targeted cleanup to prevent node.exe file-lock failures."
+        ]
+      }
+    },
     {
       "version": "0.2.21",
       "date": "2026-08-18",

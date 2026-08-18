@@ -181,6 +181,38 @@ const server = createServer((req, res) => {
       })}\n\n`);
       return;
     }
+    if (req.url?.includes("/semantic-openai-error/")) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(`event: error\ndata: ${JSON.stringify({
+        type: "error",
+        error: { type: "openai_error", message: "Temporary upstream OpenAI error" },
+      })}\n\n`);
+      return;
+    }
+    if (req.url?.includes("/semantic-upstream-failed/")) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(`event: response.failed\ndata: ${JSON.stringify({
+        type: "response.failed",
+        response: { status: "failed", error: { message: "Upstream request failed" } },
+      })}\n\n`);
+      return;
+    }
+    if (req.url?.includes("/semantic-websocket-eof/")) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(`event: response.failed\ndata: ${JSON.stringify({
+        type: "response.failed",
+        response: { status: "failed", error: { message: "websocket: close 1006 (abnormal closure): unexpected EOF" } },
+      })}\n\n`);
+      return;
+    }
+    if (req.url?.includes("/semantic-unknown/")) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(`event: response.failed\ndata: ${JSON.stringify({
+        type: "response.failed",
+        response: { status: "failed", error: { message: "Unknown upstream failure" } },
+      })}\n\n`);
+      return;
+    }
     if (req.url?.includes("/late-server-error/")) {
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "PARTIAL" })}\n\n`);

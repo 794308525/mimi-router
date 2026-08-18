@@ -93,7 +93,16 @@ export default function App() {
       return current;
     });
     if (type === "request.finished") {
-      void api.stats(7).then((stats) => setData((current) => current ? { ...current, stats } : current));
+      void api.stats(7)
+        .then((stats) => setData((current) => current ? { ...current, stats } : current))
+        .catch(() => undefined);
+      const request = payload.request as RequestRecord | undefined;
+      if (request?.status === "completed" && request.attempt_count === 1 && request.is_failover === 0
+        && request.race_triggered === 0 && request.ttft_ms != null) {
+        void api.routerSettings()
+          .then((routerSettings) => setData((current) => current ? { ...current, router_settings: routerSettings } : current))
+          .catch(() => undefined);
+      }
     }
   }), []);
 
@@ -110,7 +119,6 @@ export default function App() {
 
   const openRequest = (request: RequestRecord) => {
     setSelectedRequest(request);
-    setPage("requests");
   };
 
   if (loading) {
@@ -177,7 +185,7 @@ export default function App() {
             <button className="button button-primary button-small" type="button" onClick={() => navigate("about")}>查看更新</button>
           </section>
         )}
-        {page === "overview" && <Overview service={data.service} providers={data.providers} routeGroup={data.routes.groups[0] ?? null} requests={data.requests} stats={data.stats} routerSettings={data.router_settings} onNavigate={navigate} onOpenRequest={openRequest} setNotice={setNotice} />}
+        {page === "overview" && <Overview service={data.service} providers={data.providers} routeGroup={data.routes.groups[0] ?? null} requests={data.requests} stats={data.stats} routerSettings={data.router_settings} onNavigate={navigate} onOpenRequest={openRequest} initialDetail={selectedRequest} onDetailClosed={() => setSelectedRequest(null)} setNotice={setNotice} />}
         {page === "providers" && <ProvidersPage providers={data.providers} groups={data.routes.groups} stats={data.stats} pricingModels={data.pricing.models} onRefresh={load} setNotice={setNotice} />}
         {page === "requests" && <RequestsPage requests={data.requests} providers={data.providers} onRefresh={load} setNotice={setNotice} initialDetail={selectedRequest} onDetailClosed={() => setSelectedRequest(null)} />}
         {page === "settings" && <SettingsPage codex={data.codex} pricing={data.pricing} setNotice={setNotice} />}
