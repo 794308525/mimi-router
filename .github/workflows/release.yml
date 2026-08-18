@@ -136,7 +136,16 @@ jobs:
         run: npm ci
 
       - name: Build signed desktop bundles
+        if: matrix.platform != 'macos' || matrix.arch != 'x64'
         run: npm run desktop:build -- --target "${{ matrix.target }}" --bundles "${{ matrix.bundles }}"
+
+      - name: Build signed macOS Intel app and updater
+        if: matrix.platform == 'macos' && matrix.arch == 'x64'
+        run: npm run desktop:build -- --target "${{ matrix.target }}" --bundles app
+
+      - name: Create macOS Intel DMG without Finder automation
+        if: matrix.platform == 'macos' && matrix.arch == 'x64'
+        run: node scripts/create-macos-dmg.mjs "${{ matrix.target }}" "${{ needs.validate.outputs.version }}" "${{ matrix.arch }}"
 
       - name: Collect release artifacts
         run: node scripts/collect-release-artifacts.mjs "${{ matrix.platform }}" "${{ matrix.arch }}" "${{ needs.validate.outputs.version }}" "${{ matrix.target }}"

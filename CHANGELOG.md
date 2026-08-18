@@ -2,6 +2,10 @@
 
 This project follows semantic versioning. Every feature update must keep the application version and both language variants of the release notes in sync.
 
+## 0.2.33 - 2026-08-18
+
+- Fixed macOS Intel releases failing during DMG Finder customization by using a CI-compatible DMG generation path.
+
 ## 0.2.32 - 2026-08-18
 
 - Fixed the dashboard final-provider hint so it is hidden for requests without a retry or with same-provider retries.

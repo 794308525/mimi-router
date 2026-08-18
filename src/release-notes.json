@@ -1,6 +1,18 @@
 {
-  "currentVersion": "0.2.32",
+  "currentVersion": "0.2.33",
   "releases": [
+    {
+      "version": "0.2.33",
+      "date": "2026-08-18",
+      "notes": {
+        "zh-CN": [
+          "修复 macOS Intel 发布流程在 DMG Finder 美化步骤失败的问题，改用 CI 兼容的 DMG 生成方式。"
+        ],
+        "en": [
+          "Fixed macOS Intel releases failing during DMG Finder customization by using a CI-compatible DMG generation path."
+        ]
+      }
+    },
     {
       "version": "0.2.32",
       "date": "2026-08-18",
