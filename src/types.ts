@@ -240,6 +240,12 @@ export type RequestRecord = {
   route_rule_name: string | null;
   initial_provider_id: string | null;
   initial_provider_name: string | null;
+  codex_thread?: {
+    found: boolean;
+    title: string | null;
+    project_name: string | null;
+    source: "state" | "catalog" | null;
+  } | null;
   attempts?: RequestAttempt[];
 };
 

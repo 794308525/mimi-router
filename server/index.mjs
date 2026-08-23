@@ -31,6 +31,7 @@ import { RouterEngine, testProvider } from "./router.mjs";
 import { fetchOfficialPricing } from "./pricing.mjs";
 import { BenchmarkService } from "./benchmark.mjs";
 import { getCodexModelCatalog } from "./codex-models.mjs";
+import { lookupCodexThreadMetadata } from "./codex-thread-metadata.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const dataDir = resolve(process.env.CODEX_ROUTER_DATA_DIR || `${projectRoot}/data`);
@@ -314,7 +315,11 @@ async function handleApi(req, res, url) {
   const requestMatch = url.pathname.match(/^\/api\/requests\/([^/]+)$/);
   if (requestMatch && req.method === "GET") {
     const request = getRequest(db, requestMatch[1]);
-    return request ? json(res, 200, request) : json(res, 404, { error: "请求不存在" });
+    if (!request) return json(res, 404, { error: "请求不存在" });
+    return json(res, 200, {
+      ...request,
+      codex_thread: lookupCodexThreadMetadata(request.conversation_id),
+    });
   }
   const cancelMatch = url.pathname.match(/^\/api\/requests\/([^/]+)\/cancel$/);
   if (cancelMatch && req.method === "POST") {

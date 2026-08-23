@@ -25,6 +25,7 @@ import {
 
 const PROVIDER_NAMES_VISIBLE_KEY = "mimi-router.provider-names-visible";
 type ProviderSortMode = "priority" | "cost" | "speed" | "cache";
+type RecentUsageFilter = "all" | "success" | "failed";
 
 export function Overview({
   service,
@@ -54,6 +55,9 @@ export function Overview({
   const [visibleTrendMetrics, setVisibleTrendMetrics] = useState<TrendMetric[]>(() => TREND_METRICS.map(([metric]) => metric));
   const [summaryRange, setSummaryRange] = useState<"today" | "yesterday" | "seven_days">("today");
   const [providerSortMode, setProviderSortMode] = useState<ProviderSortMode>("priority");
+  const [recentUsageFilter, setRecentUsageFilter] = useState<RecentUsageFilter>("all");
+  const [filteredRecentUsage, setFilteredRecentUsage] = useState<RequestRecord[] | null>(null);
+  const [loadingFilteredRecentUsage, setLoadingFilteredRecentUsage] = useState(false);
   const [providerNamesVisible, setProviderNamesVisible] = useState(readProviderNamesVisible);
   const [hoveredTrend, setHoveredTrend] = useState<number | null>(null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
@@ -139,6 +143,37 @@ export function Overview({
       });
     return () => { cancelled = true; };
   }, [detail?.id, detail?.status, requests, setNotice]);
+
+  useEffect(() => {
+    if (recentUsageFilter === "all") {
+      setFilteredRecentUsage(null);
+      setLoadingFilteredRecentUsage(false);
+      return;
+    }
+    let cancelled = false;
+    setFilteredRecentUsage(null);
+    setLoadingFilteredRecentUsage(true);
+    void api.requestPage({
+      page: 1,
+      page_size: 20,
+      status: recentUsageFilter,
+      provider_id: "all",
+      query: "",
+    })
+      .then((result) => {
+        if (!cancelled) setFilteredRecentUsage(result.items.slice(0, 20));
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setFilteredRecentUsage([]);
+          setNotice({ type: "error", message: error instanceof Error ? error.message : "筛选记录加载失败" });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingFilteredRecentUsage(false);
+      });
+    return () => { cancelled = true; };
+  }, [recentUsageFilter, setNotice]);
   const active = requests.filter((request) => ACTIVE_REQUEST_STATES.has(request.status));
   const summary = stats.periods?.[summaryRange] ?? stats.summary;
   const trendRange = summaryRange === "seven_days" ? "7d" : summaryRange;
@@ -239,7 +274,9 @@ export function Overview({
   const hoveredAnchorY = hoveredMetricPoints.length
     ? Math.min(...hoveredMetricPoints.map((point) => point.y))
     : chart.top + plotHeight / 2;
-  const recentUsage = requests.slice(0, 20);
+  const recentUsage = recentUsageFilter === "all"
+    ? requests.slice(0, 20)
+    : filteredRecentUsage ?? [];
   const ttftBaselines = useMemo(() => buildTtftBaselines(requests), [requests]);
   const adaptivePreview = routerSettings.adaptive_first_token_preview;
   const adaptiveTimeoutSeconds = Number(((adaptivePreview?.timeout_ms ?? routerSettings.first_token_timeout_ms) / 1000).toFixed(1));
@@ -672,10 +709,26 @@ export function Overview({
       <section className="table-shell overview-usage-table">
         <header className="table-title home-table-title">
           <div><h2>最近使用记录</h2></div>
-          <button className="button button-secondary button-small" type="button" onClick={() => onNavigate("requests")}>全部记录 <ArrowRight size={14} /></button>
+          <div className="home-table-actions">
+            <div className="recent-status-tabs" role="radiogroup" aria-label="最近使用记录筛选">
+              {([ ["all", "全部"], ["success", "成功"], ["failed", "失败"] ] as const).map(([filter, label]) => (
+                <button
+                  key={filter}
+                  type="button"
+                  role="radio"
+                  aria-checked={recentUsageFilter === filter}
+                  className={recentUsageFilter === filter ? "active" : ""}
+                  onClick={() => setRecentUsageFilter(filter)}
+                >{label}</button>
+              ))}
+            </div>
+            <button className="button button-secondary button-small" type="button" onClick={() => onNavigate("requests")}>全部记录 <ArrowRight size={14} /></button>
+          </div>
         </header>
-        {recentUsage.length === 0 ? (
-          <EmptyState title="暂无使用记录" description="上游返回 Token 用量后会自动显示在这里。" />
+        {loadingFilteredRecentUsage ? (
+          <EmptyState title="正在加载记录" description="正在从后端读取筛选结果。" />
+        ) : recentUsage.length === 0 ? (
+          <EmptyState title="暂无使用记录" description={recentUsageFilter === "all" ? "上游返回 Token 用量后会自动显示在这里。" : `暂无${recentUsageFilter === "success" ? "成功" : "失败"}记录。`} />
         ) : (
           <table className="overview-records-table">
             <colgroup>

@@ -1160,6 +1160,10 @@ export function listRequestPage(db, input = {}) {
 
   if (status === "running") {
     conditions.push("r.status IN ('received','routing','connecting','streaming')");
+  } else if (status === "success") {
+    conditions.push("r.status = 'completed'");
+  } else if (status === "failed") {
+    conditions.push("r.status IN ('failed','cancelled','client_disconnected','interrupted')");
   } else if (status !== "all") {
     conditions.push("r.status = ?");
     values.push(status);

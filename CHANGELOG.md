@@ -2,6 +2,22 @@
 
 This project follows semantic versioning. Every feature update must keep the application version and both language variants of the release notes in sync.
 
+## 0.2.42 - 2026-08-23
+
+- Dashboard recent-usage Success and Failed filters now use the backend paginated query so historical results outside the latest 100 requests are included.
+
+## 0.2.41 - 2026-08-23
+
+- Simplified request history status filtering to All, Success, and Failed radio buttons; Failed aggregates failed, cancelled, client-disconnected, and interrupted requests through the backend.
+
+## 0.2.40 - 2026-08-23
+
+- Added All, Success, and Failed filters to the dashboard's recent usage records, with All selected by default.
+
+## 0.2.39 - 2026-08-19
+
+- Request details now try to read the local Codex conversation title and project name from the conversation ID on macOS and Windows; missing or unreadable local data never affects request forwarding.
+
 ## 0.2.38 - 2026-08-19
 
 - Fixed Codex conversation ID detection by reading thread/session headers, Codex metadata, and compatible body fields so rawchat safety blocks can be tied to the affected conversation.

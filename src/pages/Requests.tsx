@@ -24,6 +24,8 @@ import {
   reasoningEffortLabel,
 } from "../components/Common";
 
+type RequestStatusFilter = "all" | "success" | "failed";
+
 export function RequestsPage({
   requests,
   providers,
@@ -39,7 +41,7 @@ export function RequestsPage({
   initialDetail: RequestRecord | null;
   onDetailClosed: () => void;
 }) {
-  const [status, setStatus] = useState("all");
+  const [status, setStatus] = useState<RequestStatusFilter>("all");
   const [providerId, setProviderId] = useState("all");
   const [query, setQuery] = useState("");
   const [appliedQuery, setAppliedQuery] = useState("");
@@ -183,15 +185,18 @@ export function RequestsPage({
 
       <section className="filters-bar">
         <Filter size={17} />
-        <select value={status} onChange={(event) => { setStatus(event.target.value); setPage(1); }}>
-          <option value="all">全部状态</option>
-          <option value="running">进行中</option>
-          <option value="completed">成功</option>
-          <option value="failed">失败</option>
-          <option value="cancelled">取消</option>
-          <option value="client_disconnected">客户端断开</option>
-          <option value="interrupted">异常中断</option>
-        </select>
+        <div className="request-status-tabs" role="radiogroup" aria-label="请求状态筛选">
+          {([ ["all", "全部"], ["success", "成功"], ["failed", "失败"] ] as const).map(([filter, label]) => (
+            <button
+              key={filter}
+              type="button"
+              role="radio"
+              aria-checked={status === filter}
+              className={status === filter ? "active" : ""}
+              onClick={() => { setStatus(filter); setPage(1); }}
+            >{label}</button>
+          ))}
+        </div>
         <select value={providerId} onChange={(event) => { setProviderId(event.target.value); setPage(1); }}>
           <option value="all">全部中转</option>
           {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
@@ -289,6 +294,8 @@ export function RequestDetail({
         <div><span>发送模型</span><strong>{request.upstream_model || "-"}</strong></div>
         <div><span>实际模型</span><strong>{request.actual_upstream_model || "-"}</strong></div>
         <div><span>推理强度</span><strong>{reasoningEffortLabel(request.reasoning_effort)}</strong></div>
+        <div><span>会话标题</span><strong title={request.codex_thread?.title || undefined}>{request.codex_thread?.title || (request.conversation_id ? "未匹配本地会话" : "未识别会话")}</strong></div>
+        <div><span>项目</span><strong>{request.codex_thread?.project_name || (request.conversation_id ? "未匹配本地项目" : "未识别项目")}</strong></div>
         <div><span>协议路径</span><strong>{protocolPathLabel(request.client_protocol, request.upstream_protocol, request.protocol_wrapped)}</strong></div>
         <div><span>路由规则</span><strong>{request.route_rule_name || "-"}</strong></div>
         <div><span>路由组</span><strong>{request.route_group_name || "-"}</strong></div>
