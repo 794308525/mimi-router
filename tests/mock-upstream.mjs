@@ -7,6 +7,7 @@ let recoverEarlyCalls = 0;
 let recoverLateCalls = 0;
 let delayedHeaderRaceCalls = 0;
 const chatRequestCounts = new Map();
+let lastResponsesRequest = null;
 
 const server = createServer((req, res) => {
   const compact = req.url?.endsWith("/responses/compact");
@@ -14,6 +15,11 @@ const server = createServer((req, res) => {
   if (req.method === "GET" && req.url === "/__stats") {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ chat_requests: Object.fromEntries(chatRequestCounts) }));
+    return;
+  }
+  if (req.method === "GET" && req.url === "/__last-responses") {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(lastResponsesRequest));
     return;
   }
   if (req.method !== "POST" || (!req.url?.endsWith("/responses") && !compact && !chat)) {
@@ -279,6 +285,14 @@ const server = createServer((req, res) => {
     }
     if (req.url?.includes("/hang/")) return;
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    lastResponsesRequest = {
+      url: req.url,
+      body,
+      headers: {
+        "thread-id": req.headers["thread-id"] || null,
+        "x-codex-turn-metadata": req.headers["x-codex-turn-metadata"] || null,
+      },
+    };
     if (req.url?.includes("/rawchat-block/")) {
       if (body.conversation === "blocked-session" || req.headers["thread-id"] === "blocked-session") {
         res.writeHead(403, { "content-type": "application/json" });

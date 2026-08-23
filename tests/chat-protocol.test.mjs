@@ -39,6 +39,20 @@ test("maps Chat messages, tools, reasoning, and structured output to Responses",
   assert.equal(converted.input[3].type, "function_call_output");
 });
 
+test("preserves explicit and derived conversation cache metadata", () => {
+  const explicit = chatRequestToResponses({
+    model: "gpt-5.6-terra",
+    messages: [],
+    prompt_cache_key: "client-cache-key",
+    previous_response_id: "resp_previous",
+  }, { promptCacheKey: "thread-cache-key" });
+  assert.equal(explicit.prompt_cache_key, "client-cache-key");
+  assert.equal(explicit.previous_response_id, "resp_previous");
+
+  const derived = chatRequestToResponses({ model: "gpt-5.6-terra", messages: [] }, { promptCacheKey: "thread-cache-key" });
+  assert.equal(derived.prompt_cache_key, "thread-cache-key");
+});
+
 test("rejects Chat parameters that cannot be represented by Responses", () => {
   assert.throws(
     () => chatRequestToResponses({ model: "gpt-5.6-terra", messages: [], n: 2 }),

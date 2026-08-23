@@ -12,6 +12,8 @@ export type ServiceInfo = {
   port_conflict: boolean;
 };
 
+export type ChatSupportMode = "auto" | "chat" | "responses";
+
 export type Provider = {
   id: string;
   name: string;
@@ -37,6 +39,7 @@ export type Provider = {
   last_error_at: string | null;
   last_error: string | null;
   consecutive_slow_first_tokens: number;
+  chat_support_mode: ChatSupportMode;
   chat_support_status: "unknown" | "supported" | "unsupported";
   chat_support_checked_at: string | null;
   chat_support_error: string | null;

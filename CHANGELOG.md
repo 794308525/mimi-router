@@ -2,6 +2,44 @@
 
 This project follows semantic versioning. Every feature update must keep the application version and both language variants of the release notes in sync.
 
+## 0.2.51 - 2026-08-23
+
+- Fixed live dashboard requests being mislabeled as Chat → Responses before the upstream protocol is known.
+
+## 0.2.50 - 2026-08-23
+
+- Changed compact desktop provider cards to a single dense row with statistics collected on a second line.
+
+## 0.2.49 - 2026-08-23
+
+- Further refined compact desktop provider cards with aligned labels and values for clearer grouping and readability.
+
+## 0.2.48 - 2026-08-23
+
+- Removed per-provider concurrency limits so requests are no longer rejected by provider concurrency counts; legacy configuration fields remain for database compatibility.
+
+## 0.2.47 - 2026-08-23
+
+- Improved provider cards in compact desktop windows by reducing whitespace and tightening statistics.
+
+## 0.2.46 - 2026-08-23
+
+- Improved the provider management list on small screens with a readable vertical card layout.
+
+## 0.2.45 - 2026-08-23
+
+- Chat-to-Responses now derives a stable cache key from the first-turn prefix when session headers are absent and recognizes more conversation metadata sources.
+
+## 0.2.44 - 2026-08-23
+
+- Chat-to-Responses conversion now preserves a stable conversation cache key and `previous_response_id` to improve prompt-cache reuse within a session.
+
+## 0.2.43 - 2026-08-23
+
+- Provider editing now supports automatic detection, native Chat Completions, or an explicit Chat-to-Responses compatibility mode.
+- Merged response-header/first-token and generation/total-duration columns in dashboard recent usage, with adjusted status and model/provider widths.
+- Dashboard request times now show the Chat, Responses, or Chat → Responses protocol path.
+
 ## 0.2.42 - 2026-08-23
 
 - Dashboard recent-usage Success and Failed filters now use the backend paginated query so historical results outside the latest 100 requests are included.

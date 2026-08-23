@@ -38,6 +38,7 @@ export function createDatabase(dataDir) {
       last_error TEXT,
       consecutive_slow_first_tokens INTEGER NOT NULL DEFAULT 0,
       chat_support_status TEXT NOT NULL DEFAULT 'unknown',
+      chat_support_mode TEXT NOT NULL DEFAULT 'auto',
       chat_support_checked_at TEXT,
       chat_support_error TEXT,
       created_at TEXT NOT NULL,
@@ -247,6 +248,7 @@ export function createDatabase(dataDir) {
   ensureColumn(db, "route_groups", "provider_retry_attempts", "INTEGER NOT NULL DEFAULT 2");
   ensureColumn(db, "providers", "consecutive_slow_first_tokens", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "providers", "chat_support_status", "TEXT NOT NULL DEFAULT 'unknown'");
+  ensureColumn(db, "providers", "chat_support_mode", "TEXT NOT NULL DEFAULT 'auto'");
   ensureColumn(db, "providers", "chat_support_checked_at", "TEXT");
   ensureColumn(db, "providers", "chat_support_error", "TEXT");
   ensureColumn(db, "providers", "stream_progress_timeout_ms", "INTEGER NOT NULL DEFAULT 40000");
@@ -888,6 +890,7 @@ export function saveProvider(db, input, id = randomUUID()) {
     enabled: input.enabled ?? existing?.enabled ?? true,
     failure_threshold: positiveInt(input.failure_threshold, existing?.failure_threshold ?? 3),
     cooldown_ms: positiveInt(input.cooldown_ms, existing?.cooldown_ms ?? 30000),
+    chat_support_mode: normalizeChatSupportMode(input.chat_support_mode, existing?.chat_support_mode),
   };
 
   if (!values.name || !values.base_url || !values.test_model) {
@@ -900,8 +903,8 @@ export function saveProvider(db, input, id = randomUUID()) {
     INSERT INTO providers (
       id, name, base_url, default_model, test_model, cost_multiplier, has_secret, headers_json,
       connect_timeout_ms, request_timeout_ms, stream_idle_timeout_ms, stream_progress_timeout_ms,
-      max_concurrency, enabled, failure_threshold, cooldown_ms, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      max_concurrency, enabled, failure_threshold, cooldown_ms, chat_support_mode, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       base_url = excluded.base_url,
@@ -918,6 +921,7 @@ export function saveProvider(db, input, id = randomUUID()) {
       enabled = excluded.enabled,
       failure_threshold = excluded.failure_threshold,
       cooldown_ms = excluded.cooldown_ms,
+      chat_support_mode = excluded.chat_support_mode,
       updated_at = excluded.updated_at
   `).run(
     id,
@@ -936,15 +940,24 @@ export function saveProvider(db, input, id = randomUUID()) {
     values.enabled ? 1 : 0,
     values.failure_threshold,
     values.cooldown_ms,
+    values.chat_support_mode,
     existing?.created_at ?? timestamp,
     timestamp,
   );
-  if (existing && existing.base_url !== values.base_url) {
+  const chatSupportModeChanged = existing && existing.chat_support_mode !== values.chat_support_mode;
+  if (existing && (existing.base_url !== values.base_url || chatSupportModeChanged)) {
+    const status = values.chat_support_mode === "chat"
+      ? "supported"
+      : values.chat_support_mode === "responses"
+        ? "unsupported"
+        : "unknown";
     db.prepare(`
       UPDATE providers
-         SET chat_support_status = 'unknown', chat_support_checked_at = NULL, chat_support_error = NULL
+         SET chat_support_status = ?,
+             chat_support_checked_at = ?,
+             chat_support_error = NULL
        WHERE id = ?
-    `).run(id);
+    `).run(status, values.chat_support_mode === "auto" ? null : timestamp, id);
   }
   return getProvider(db, id);
 }
@@ -1462,6 +1475,10 @@ function normalizeFirstTokenTimeoutMode(value) {
 
 function normalizeFirstTokenTimeoutPolicy(value) {
   return ["off", "fixed", "adaptive"].includes(value) ? value : "off";
+}
+
+function normalizeChatSupportMode(value, fallback = "auto") {
+  return ["auto", "chat", "responses"].includes(value) ? value : (fallback || "auto");
 }
 
 function runOnce(db, id, migration) {

@@ -1,6 +1,118 @@
 {
-  "currentVersion": "0.2.42",
+  "currentVersion": "0.2.51",
   "releases": [
+    {
+      "version": "0.2.51",
+      "date": "2026-08-23",
+      "notes": {
+        "zh-CN": [
+          "修复首页实时请求在上游协议尚未确定时被误显示为 Chat → Responses 的问题。"
+        ],
+        "en": [
+          "Fixed live dashboard requests being mislabeled as Chat → Responses before the upstream protocol is known."
+        ]
+      }
+    },
+    {
+      "version": "0.2.50",
+      "date": "2026-08-23",
+      "notes": {
+        "zh-CN": [
+          "将 PC 小窗中转信息改为单行紧凑布局，统计信息收纳到第二行。"
+        ],
+        "en": [
+          "Changed compact desktop provider cards to a single dense row with statistics collected on a second line."
+        ]
+      }
+    },
+    {
+      "version": "0.2.49",
+      "date": "2026-08-23",
+      "notes": {
+        "zh-CN": [
+          "进一步整理 PC 小窗中转卡片的标签和值对齐，改善字段分组与可读性。"
+        ],
+        "en": [
+          "Further refined compact desktop provider cards with aligned labels and values for clearer grouping and readability."
+        ]
+      }
+    },
+    {
+      "version": "0.2.48",
+      "date": "2026-08-23",
+      "notes": {
+        "zh-CN": [
+          "取消渠道级并发上限，不再因渠道并发计数触发中转并发已满提示；保留旧配置字段以兼容已有数据库。"
+        ],
+        "en": [
+          "Removed per-provider concurrency limits so requests are no longer rejected by provider concurrency counts; legacy configuration fields remain for database compatibility."
+        ]
+      }
+    },
+    {
+      "version": "0.2.47",
+      "date": "2026-08-23",
+      "notes": {
+        "zh-CN": [
+          "优化 PC 小窗下的中转卡片排版，压缩空白并收紧统计信息布局。"
+        ],
+        "en": [
+          "Improved provider cards in compact desktop windows by reducing whitespace and tightening statistics."
+        ]
+      }
+    },
+    {
+      "version": "0.2.46",
+      "date": "2026-08-23",
+      "notes": {
+        "zh-CN": [
+          "优化中转管理列表在小屏幕上的布局，改为可读的纵向卡片展示。"
+        ],
+        "en": [
+          "Improved the provider management list on small screens with a readable vertical card layout."
+        ]
+      }
+    },
+    {
+      "version": "0.2.45",
+      "date": "2026-08-23",
+      "notes": {
+        "zh-CN": [
+          "Chat 转 Responses 在缺少会话头时，基于首轮稳定消息生成固定缓存键，并识别更多会话元数据来源。"
+        ],
+        "en": [
+          "Chat-to-Responses now derives a stable cache key from the first-turn prefix when session headers are absent and recognizes more conversation metadata sources."
+        ]
+      }
+    },
+    {
+      "version": "0.2.44",
+      "date": "2026-08-23",
+      "notes": {
+        "zh-CN": [
+          "Chat 自动转换为 Responses 时保留稳定会话缓存键和 previous_response_id，改善同一会话的提示缓存命中。"
+        ],
+        "en": [
+          "Chat-to-Responses conversion now preserves a stable conversation cache key and previous_response_id to improve prompt-cache reuse within a session."
+        ]
+      }
+    },
+    {
+      "version": "0.2.43",
+      "date": "2026-08-23",
+      "notes": {
+        "zh-CN": [
+          "中转编辑新增 Chat 协议策略，可选择自动探测、原生 Chat Completions 或将 Chat 自动转换为 Responses。",
+          "首页最近使用记录合并响应头与首字、生成与总耗时列，并优化状态和模型渠道列宽。",
+          "首页请求时间下方显示 Chat、Responses 或 Chat → Responses 协议路径。"
+        ],
+        "en": [
+          "Provider editing now supports automatic detection, native Chat Completions, or an explicit Chat-to-Responses compatibility mode.",
+          "Merged response-header/first-token and generation/total-duration columns in dashboard recent usage, with adjusted status and model/provider widths.",
+          "Dashboard request times now show the Chat, Responses, or Chat → Responses protocol path."
+        ]
+      }
+    },
     {
       "version": "0.2.42",
       "date": "2026-08-23",

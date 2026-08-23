@@ -736,14 +736,12 @@ export function Overview({
               <col className="records-col-time" />
               <col className="records-col-provider" />
               <col className="records-col-token" />
-              <col className="records-col-headers" />
-              <col className="records-col-first-token" />
+              <col className="records-col-response" />
               <col className="records-col-generation" />
-              <col className="records-col-duration" />
               <col className="records-col-cost" />
               <col className="records-col-action" />
             </colgroup>
-            <thead><tr><th>状态</th><th>时间</th><th>模型 / 中转</th><th>Token</th><th>响应头</th><th>首字</th><th>生成</th><th>总耗时</th><th>消耗金额</th><th>操作</th></tr></thead>
+            <thead><tr><th>状态</th><th>时间</th><th>模型 / 中转</th><th>Token</th><th>响应头 / 首字</th><th>生成 / 总耗时</th><th>消耗金额</th><th>操作</th></tr></thead>
             <tbody>{recentUsage.map((request) => {
               const running = ACTIVE_REQUEST_STATES.has(request.status);
               const generationDuration = request.duration_ms != null && request.ttft_ms != null
@@ -756,7 +754,10 @@ export function Overview({
               return (
                 <tr key={request.id}>
                   <td><div className="request-status-cell"><RequestStatus status={request.status} /><RequestFailureReason request={request} /></div></td>
-                  <td><span className="tabular">{formatTime(request.started_at)}</span></td>
+                  <td>
+                    <span className="tabular">{formatTime(request.started_at)}</span>
+                    <small className="request-protocol-label">{requestProtocolLabel(request)}</small>
+                  </td>
                   <td>
                     <button className="usage-record-link" type="button" onClick={() => onOpenRequest(request)}>
                       <ModelRuntime requestedModel={request.requested_model} actualModel={request.actual_upstream_model} reasoningEffort={request.reasoning_effort} providerName={providerNamesVisible ? request.provider_name : null} initialProviderName={providerNamesVisible ? request.initial_provider_name : null} providerChanged={providerRouteChanged(request)} />
@@ -767,10 +768,18 @@ export function Overview({
                     </button>
                   </td>
                   <td><TokenStack input={request.input_tokens} cached={request.cached_tokens} output={request.output_tokens} /></td>
-                  <td title={networkTimingTitle(request)}>{formatDuration(request.headers_ms)}</td>
-                  <td><span className={`timing-cell first-token-value ${firstToken.tone}`} title={firstToken.title}><strong>{formatDuration(request.ttft_ms)}</strong><small>头后 {formatDuration(firstTokenWait)}</small></span></td>
-                  <td>{formatDuration(generationDuration)}</td>
-                  <td><ElapsedTime startedAt={request.started_at} durationMs={request.duration_ms} running={running} /></td>
+                  <td title={networkTimingTitle(request)}>
+                    <span className="merged-timing-cell">
+                      <small>头 {formatDuration(request.headers_ms)}</small>
+                      <span className={`timing-cell first-token-value ${firstToken.tone}`} title={firstToken.title}><strong>首字 {formatDuration(request.ttft_ms)}</strong><small>头后 {formatDuration(firstTokenWait)}</small></span>
+                    </span>
+                  </td>
+                  <td>
+                    <span className="merged-timing-cell">
+                      <small>生成 {formatDuration(generationDuration)}</small>
+                      <span className="merged-timing-value"><strong>总耗时</strong><ElapsedTime startedAt={request.started_at} durationMs={request.duration_ms} running={running} /></span>
+                    </span>
+                  </td>
                   <td><strong title={request.cost_status === "partial" ? "异常结束前收到的部分用量" : request.cost_status === "unknown" ? "上游未返回足够用量" : undefined}>{formatRequestCost(request.total_cost_usd, request.cost_status)}</strong></td>
                   <td>{running ? <button className="button button-danger-ghost button-compact" type="button" disabled={cancellingId === request.id} onClick={() => void cancelRequest(request)}><Ban size={11} />{cancellingId === request.id ? "中断中" : "中断"}</button> : <span className="text-muted">-</span>}</td>
                 </tr>
@@ -851,6 +860,12 @@ function networkTimingTitle(request: RequestRecord) {
   }
   const connection = request.connection_reused ? "连接已复用" : `建连 ${formatDuration(request.network_connect_ms)}`;
   return `${connection} · 上传 ${formatDuration(request.request_upload_ms)} · 上游等待 ${formatDuration(request.upstream_wait_ms)}`;
+}
+
+function requestProtocolLabel(request: RequestRecord) {
+  if (request.protocol_wrapped) return "Chat → Responses";
+  if (request.client_protocol === "chat") return request.upstream_protocol === "responses" ? "Chat → Responses" : "Chat";
+  return "Responses";
 }
 
 function readProviderNamesVisible() {

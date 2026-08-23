@@ -5,6 +5,13 @@ import { DEFAULT_MODEL } from "./constants.mjs";
 import { calculateOfficialCost } from "./pricing.mjs";
 import { fetchWithNetworkTiming, networkTimingForError } from "./network-timing.mjs";
 import {
+  createProtocolDebugger,
+  summarizeChatRequest,
+  summarizeHeaders,
+  summarizeResponsesRequest,
+  summarizeUsage,
+} from "./protocol-debug.mjs";
+import {
   ChatCompatibilityError,
   chatRequestToResponses,
   chatUsageToResponseUsage,
@@ -21,7 +28,6 @@ const LOCAL_REJECTION_CATEGORIES = new Set([
   "auth_unavailable",
   "circuit_open",
   "circuit_probe_in_progress",
-  "concurrency_limited",
 ]);
 const RETRYABLE_SEMANTIC_CATEGORIES = new Set([
   "capacity",
@@ -111,6 +117,12 @@ function isRawchatProvider(provider) {
   return String(provider?.base_url || "").toLowerCase().includes("rawchat");
 }
 
+function chatSupportMode(provider) {
+  return ["auto", "chat", "responses"].includes(provider?.chat_support_mode)
+    ? provider.chat_support_mode
+    : "auto";
+}
+
 function headerValue(headers, name) {
   const value = headers?.[name];
   return Array.isArray(value) ? value[0] : value;
@@ -126,27 +138,61 @@ function parseJsonHeader(value) {
   }
 }
 
-function extractConversationId(body, req) {
+function conversationIdCandidates(body, req, { includeRequestId = true, includePreviousResponse = true } = {}) {
   const codexTurnMetadata = parseJsonHeader(headerValue(req?.headers, "x-codex-turn-metadata"));
   const clientMetadata = body?.client_metadata && typeof body.client_metadata === "object"
     ? body.client_metadata
     : null;
+  const requestMetadata = body?.metadata && typeof body.metadata === "object"
+    ? body.metadata
+    : null;
   const candidates = [
     headerValue(req?.headers, "thread-id"),
     headerValue(req?.headers, "session-id"),
+    headerValue(req?.headers, "x-thread-id"),
+    headerValue(req?.headers, "x-session-id"),
+    headerValue(req?.headers, "x-conversation-id"),
     codexTurnMetadata?.thread_id,
     codexTurnMetadata?.session_id,
     clientMetadata?.thread_id,
     clientMetadata?.session_id,
+    requestMetadata?.thread_id,
+    requestMetadata?.session_id,
+    requestMetadata?.conversation_id,
     typeof body?.conversation === "string" ? body.conversation : body?.conversation?.id,
     body?.conversation_id,
     body?.session_id,
-    body?.previous_response_id,
-    headerValue(req?.headers, "x-client-request-id"),
-    body?.prompt_cache_key,
   ];
-  const value = candidates.find((candidate) => typeof candidate === "string" && candidate.trim());
+  if (includePreviousResponse) candidates.push(body?.previous_response_id);
+  candidates.push(body?.prompt_cache_key);
+  if (includeRequestId) candidates.push(headerValue(req?.headers, "x-client-request-id"));
+  return candidates;
+}
+
+function extractConversationId(body, req) {
+  const value = conversationIdCandidates(body, req).find((candidate) => typeof candidate === "string" && candidate.trim());
   return value ? value.trim().slice(0, 512) : null;
+}
+
+function extractStableConversationId(body, req) {
+  const value = conversationIdCandidates(body, req, { includeRequestId: false, includePreviousResponse: false })
+    .find((candidate) => typeof candidate === "string" && candidate.trim());
+  return value ? value.trim() : null;
+}
+
+function promptCacheKeyForConversation(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return null;
+  return normalized.length <= 64
+    ? normalized
+    : createHash("sha256").update(normalized).digest("hex");
+}
+
+function deriveChatCacheKey(body) {
+  if (!Array.isArray(body?.messages) || body.messages.length === 0) return null;
+  const firstUserIndex = body.messages.findIndex((message) => message?.role === "user");
+  const stablePrefix = body.messages.slice(0, firstUserIndex >= 0 ? firstUserIndex + 1 : 1);
+  return createHash("sha256").update(JSON.stringify(stablePrefix)).digest("hex");
 }
 
 function conversationHash(conversationId) {
@@ -248,7 +294,7 @@ export class RouterEngine {
     this.db = db;
     this.dataDir = dataDir;
     this.publish = publish;
-    this.inFlight = new Map();
+    this.protocolDebug = createProtocolDebugger(dataDir);
     this.halfOpenProbes = new Set();
     this.stickyResponses = new Map();
     this.controllers = new Map();
@@ -300,7 +346,6 @@ export class RouterEngine {
         && provider.circuit_state === "open"
         && provider.circuit_open_until
         && Date.parse(provider.circuit_open_until) <= now
-        && (this.inFlight.get(provider.id) ?? 0) < provider.max_concurrency
         && (!provider.last_error || AUTO_RECOVERY_FAILURE_CATEGORIES.has(provider.last_error)))
       .sort((left, right) => Date.parse(left.circuit_open_until) - Date.parse(right.circuit_open_until)
         || Date.parse(left.updated_at) - Date.parse(right.updated_at)
@@ -465,6 +510,22 @@ export class RouterEngine {
     const requestedModel = String(body.model ?? DEFAULT_MODEL);
     const reasoningEffort = extractReasoningEffort(body);
     const conversationId = extractConversationId(body, req);
+    const stableConversationId = extractStableConversationId(body, req);
+    const explicitConversationCacheKey = promptCacheKeyForConversation(stableConversationId);
+    const derivedConversationCacheKey = clientProtocol === "chat" ? deriveChatCacheKey(body) : null;
+    const conversationCacheKey = explicitConversationCacheKey || derivedConversationCacheKey;
+    this.protocolDebug("request.incoming", {
+      request_id: requestId,
+      client_protocol: clientProtocol,
+      upstream_endpoint: upstreamEndpoint,
+      conversation_id_present: Boolean(conversationId),
+      stable_conversation_id_present: Boolean(stableConversationId),
+      cache_key_source: explicitConversationCacheKey ? "conversation_metadata" : derivedConversationCacheKey ? "first_message_prefix" : "none",
+      cache_key: conversationCacheKey
+        ? { present: true, chars: conversationCacheKey.length, hash: createHash("sha256").update(conversationCacheKey).digest("hex").slice(0, 16) }
+        : { present: false },
+      request: clientProtocol === "chat" ? summarizeChatRequest(body, req.headers) : null,
+    });
     const isStream = upstreamEndpoint !== "responses/compact" && body.stream === true;
     this.updateRequest(requestId, {
       status: "routing",
@@ -569,15 +630,21 @@ export class RouterEngine {
       const attemptStarted = new Date();
       const attemptMono = performance.now();
       const upstreamModel = requestedModel;
+      const providerChatMode = chatSupportMode(provider);
       const upstreamProtocol = clientProtocol === "chat"
-        && (provider.chat_support_status === "unsupported" || chatWrappedProviders.has(provider.id))
+        && (providerChatMode === "responses"
+          || (providerChatMode === "auto"
+            && (provider.chat_support_status === "unsupported" || chatWrappedProviders.has(provider.id))))
         ? "responses"
         : clientProtocol;
       const protocolWrapped = clientProtocol === "chat" && upstreamProtocol === "responses";
       let upstreamBody;
       try {
         if (protocolWrapped) {
-          wrappedChatBody ??= chatRequestToResponses({ ...body, model: upstreamModel });
+          wrappedChatBody ??= chatRequestToResponses(
+            { ...body, model: upstreamModel },
+            { promptCacheKey: conversationCacheKey },
+          );
           upstreamBody = wrappedChatBody;
         } else {
           upstreamBody = { ...body, model: upstreamModel };
@@ -596,6 +663,18 @@ export class RouterEngine {
         return;
       }
 
+      if (protocolWrapped) {
+        this.protocolDebug("chat.to_responses", {
+          request_id: requestId,
+          attempt_id: attemptId,
+          sequence,
+          provider_id: provider.id,
+          provider_name: provider.name,
+          request_headers: summarizeHeaders(req.headers),
+          converted_request: summarizeResponsesRequest(upstreamBody),
+        });
+      }
+
       this.beginAttempt(
         requestId,
         attemptId,
@@ -606,7 +685,6 @@ export class RouterEngine {
         upstreamProtocol,
         protocolWrapped,
       );
-      this.acquireProvider(provider.id, probe);
       this.publish("request.attempt_started", {
         request_id: requestId,
         attempt: this.getAttempt(attemptId),
@@ -646,6 +724,18 @@ export class RouterEngine {
           },
         );
         upstream = timedFetch.response;
+        if (protocolWrapped) {
+          this.protocolDebug("responses.upstream_headers", {
+            request_id: requestId,
+            attempt_id: attemptId,
+            status: upstream.status,
+            content_type: upstream.headers.get("content-type"),
+            cache_control: upstream.headers.get("cache-control"),
+            x_request_id: upstream.headers.get("x-request-id"),
+            x_cache: upstream.headers.get("x-cache"),
+            timing: timedFetch.timing,
+          });
+        }
         clearConnectTimer();
         const headersAt = new Date();
         this.updateAttempt(attemptId, {
@@ -664,7 +754,7 @@ export class RouterEngine {
         clearTimeout(requestTimer);
         error = effectiveAttemptError(error, attemptController);
         this.updateAttempt(attemptId, networkTimingForError(error) ?? {});
-        this.releaseProvider(provider.id, probe);
+        this.releaseSelection(provider.id, probe);
         const terminationReason = clientTerminationReason(clientController);
         const category = terminationReason
           || (error instanceof RouterTimeoutError ? error.category : error?.name === "TimeoutError" ? "timeout" : "network");
@@ -700,13 +790,13 @@ export class RouterEngine {
       }
 
       let bufferedErrorResponse = null;
-      if (clientProtocol === "chat" && upstreamProtocol === "chat" && !upstream.ok
+      if (clientProtocol === "chat" && upstreamProtocol === "chat" && providerChatMode === "auto" && !upstream.ok
         && [400, 404, 405, 501].includes(upstream.status)) {
         bufferedErrorResponse = Buffer.from(await upstream.arrayBuffer());
         const responseText = bufferedErrorResponse.toString("utf8");
         if (isChatEndpointUnsupported(upstream.status, responseText)) {
           clearTimeout(requestTimer);
-          this.releaseProvider(provider.id, probe);
+          this.releaseSelection(provider.id, probe);
           const message = `${provider.name} 不支持 Chat Completions`;
           this.markChatSupport(provider.id, "unsupported", extractUpstreamError(responseText, upstream.status));
           this.finishAttempt(attemptId, attemptMono, "failed", upstream.status, "unsupported_endpoint", message, {
@@ -726,7 +816,7 @@ export class RouterEngine {
       if (upstreamEndpoint === "responses/compact" && [404, 405].includes(upstream.status)) {
         await upstream.arrayBuffer().catch(() => null);
         clearTimeout(requestTimer);
-        this.releaseProvider(provider.id, probe);
+        this.releaseSelection(provider.id, probe);
         const message = `${provider.name} 不支持 Responses Compact`;
         this.finishAttempt(attemptId, attemptMono, "failed", upstream.status, "unsupported_endpoint", message);
         this.publishAttempt(requestId, attemptId);
@@ -747,7 +837,7 @@ export class RouterEngine {
       if (classification.retryable || classification.auth) {
         const errorText = responseText || await upstream.text().catch(() => "");
         clearTimeout(requestTimer);
-        this.releaseProvider(provider.id, probe);
+        this.releaseSelection(provider.id, probe);
         const message = extractUpstreamError(errorText, upstream.status);
         if (isRawchatProvider(provider) && isRawchatSafetyMessage(message)) {
           this.markConversationBlocked(requestId, provider, conversationId, message);
@@ -790,7 +880,7 @@ export class RouterEngine {
       if (!upstream.ok) {
         const responseBuffer = bufferedErrorResponse ?? Buffer.from(await upstream.arrayBuffer());
         clearTimeout(requestTimer);
-        this.releaseProvider(provider.id, probe);
+        this.releaseSelection(provider.id, probe);
         this.finishAttempt(attemptId, attemptMono, "failed", upstream.status, "request_error", `上游返回 ${upstream.status}`);
         this.publishAttempt(requestId, attemptId);
         this.forwardHeaders(res, upstream, requestId);
@@ -909,7 +999,7 @@ export class RouterEngine {
           if (!route.group.failover_enabled) break;
           continue;
         }
-        this.releaseProvider(provider.id, probe);
+        this.releaseSelection(provider.id, probe);
         if (error instanceof UpstreamSemanticFailureError && !clientTerminationReason(clientController)) {
           if (isRawchatProvider(provider) && isRawchatSafetyMessage(error.message) && !res.headersSent) {
             this.markConversationBlocked(requestId, provider, conversationId, error.message);
@@ -1020,7 +1110,6 @@ export class RouterEngine {
     const attemptMono = performance.now();
     const upstreamBody = { ...body, model: requestedModel };
     this.beginAttempt(requestId, attemptId, sequence, provider, attemptStarted, requestedModel);
-    this.acquireProvider(provider.id, probe);
     this.publish("request.attempt_started", {
       request_id: requestId,
       attempt: this.getAttempt(attemptId),
@@ -1085,7 +1174,7 @@ export class RouterEngine {
       clearTimeout(requestTimer);
       error = effectiveAttemptError(error, attemptController);
       this.updateAttempt(attemptId, networkTimingForError(error) ?? {});
-      this.releaseProvider(provider.id, probe);
+      this.releaseSelection(provider.id, probe);
       const terminationReason = clientTerminationReason(clientController);
       const category = terminationReason
         || (error instanceof RouterTimeoutError ? error.category : error?.name === "TimeoutError" ? "timeout" : "network");
@@ -1321,7 +1410,7 @@ export class RouterEngine {
         responseId: candidate.responseId,
         actualUpstreamModel: candidate.actualUpstreamModel,
       })) return;
-      this.releaseProvider(provider.id, probe);
+      this.releaseSelection(provider.id, probe);
       const terminationReason = clientTerminationReason(clientController);
       const category = terminationReason || streamFailureCategory(error);
       const message = terminationReason ? terminationMessage(terminationReason) : safeMessage(error);
@@ -1434,7 +1523,7 @@ export class RouterEngine {
     clearTimeout(candidate.requestTimer);
     candidate.attemptController.abort(new Error(category));
     await candidate.reader?.cancel().catch(() => {});
-    this.releaseProvider(candidate.provider.id, candidate.probe);
+    this.releaseSelection(candidate.provider.id, candidate.probe);
     this.finishAttempt(
       candidate.attemptId,
       candidate.attemptMono,
@@ -1452,7 +1541,7 @@ export class RouterEngine {
     clearTimeout(attempt.requestTimer);
     const status = attempt.upstream.status;
     const text = await attempt.upstream.text().catch(() => "");
-    this.releaseProvider(attempt.provider.id, attempt.probe);
+    this.releaseSelection(attempt.provider.id, attempt.probe);
     this.finishAttempt(attempt.attemptId, attempt.attemptMono, "failed", status, "request_error", extractUpstreamError(text, status));
     this.recordFailure(attempt.provider, "request_error");
     this.publishAttempt(attempt.requestId, attempt.attemptId);
@@ -1693,15 +1782,29 @@ export class RouterEngine {
     let semanticFailure = null;
     let firstOutputRecorded = false;
     let terminalReached = false;
+    const upstreamEventCounts = new Map();
     const progressTracker = createStreamProgressTracker(streamProgressTimeoutMs);
     const bridge = createResponsesToChatBridge({
       stream: isStream,
       includeUsage: Boolean(context.chatIncludeUsage),
       requestedModel: upstreamModel,
       onPayload: (payload) => {
+        const eventType = String(payload?.type || payload?.object || "unknown");
+        upstreamEventCounts.set(eventType, (upstreamEventCounts.get(eventType) || 0) + 1);
         usage = extractUsage(payload) ?? usage;
         responseId = extractResponseId(payload) || responseId;
         actualUpstreamModel = this.observeAttemptPayload({ requestId, attemptId, upstreamModel, payload }) || actualUpstreamModel;
+        if (payload?.response?.usage || ["response.completed", "response.incomplete", "response.failed", "error"].includes(eventType)) {
+          this.protocolDebug("responses.upstream_event", {
+            request_id: requestId,
+            attempt_id: attemptId,
+            type: eventType,
+            response_id: responseId || null,
+            actual_model: actualUpstreamModel || null,
+            usage: summarizeUsage(extractUsage(payload)),
+            error_keys: payload?.error && typeof payload.error === "object" ? Object.keys(payload.error).sort() : [],
+          });
+        }
         semanticFailure ??= semanticFailureFromPayload(payload, upstream.status);
         if (!semanticFailure && isStreamProgressPayload(payload)) {
           progressTracker.note();
@@ -1806,6 +1909,18 @@ export class RouterEngine {
       clearTimeout(requestTimer);
     }
 
+    this.protocolDebug("responses.upstream_summary", {
+      request_id: requestId,
+      attempt_id: attemptId,
+      response_id: responseId || null,
+      actual_model: actualUpstreamModel || null,
+      usage: summarizeUsage(usage),
+      event_counts: Object.fromEntries(upstreamEventCounts),
+      terminal_reached: terminalReached,
+      bridge_completed: bridge.completed,
+      bridge_failed: Boolean(bridge.failure),
+    });
+
     if (bridge.failure || semanticFailure) {
       const failure = semanticFailure || bridgeFailureError(bridge.failure, upstream.status);
       this.completeTerminalFailure({
@@ -1877,7 +1992,7 @@ export class RouterEngine {
       });
     }
     this.syncRequestUsage(requestId);
-    this.releaseProvider(provider.id, probe);
+    this.releaseSelection(provider.id, probe);
     if (upstreamProtocol === "chat") this.markChatSupport(provider.id, "supported");
     this.recordSuccess(provider);
     this.finishAttempt(attemptId, attemptMono, "completed", upstream.status, null, null, {
@@ -1952,7 +2067,7 @@ export class RouterEngine {
       upstream_protocol: upstreamProtocol,
       protocol_wrapped: protocolWrapped ? 1 : 0,
     });
-    this.releaseProvider(provider.id, probe);
+    this.releaseSelection(provider.id, probe);
     if (affectsProviderHealth) this.recordFailure(provider, effectiveFailure.category);
     this.finishAttempt(attemptId, attemptMono, "failed", upstream.status, effectiveFailure.category, effectiveFailure.message, {
       termination_reason: effectiveFailure.category,
@@ -2063,9 +2178,6 @@ export class RouterEngine {
     if (this.halfOpenProbes.has(earliest.provider.id)) {
       return { waitProviderId: earliest.provider.id };
     }
-    if ((this.inFlight.get(earliest.provider.id) ?? 0) >= earliest.provider.max_concurrency) {
-      return { waitProviderId: earliest.provider.id, waitMs: 100 };
-    }
     return { selection: this.claimSelection(earliest.provider) };
   }
 
@@ -2112,11 +2224,6 @@ export class RouterEngine {
     ))) {
       return { status: 503, category: "circuit_probe_in_progress", message: "中转正在进行恢复探测", retryAfterMs: 1000 };
     }
-    if (providers.every((provider) => (
-      (this.inFlight.get(provider.id) ?? 0) >= provider.max_concurrency
-    ))) {
-      return { status: 503, category: "concurrency_limited", message: "所有中转当前并发已满", retryAfterMs: 1000 };
-    }
     return { status: 503, category: "no_provider", message: "路由组内暂时没有可用中转" };
   }
 
@@ -2129,7 +2236,6 @@ export class RouterEngine {
   providerAvailable(provider, { excludeUnhealthy = false } = {}) {
     if (!provider.enabled || provider.health_status === "auth_error") return false;
     if (excludeUnhealthy && provider.health_status === "unhealthy") return false;
-    if ((this.inFlight.get(provider.id) ?? 0) >= provider.max_concurrency) return false;
     if (provider.circuit_state === "closed") return true;
     if (provider.circuit_state === "half_open") return !this.halfOpenProbes.has(provider.id);
     if (provider.circuit_state === "open" && provider.circuit_open_until) {
@@ -2175,10 +2281,6 @@ export class RouterEngine {
     return timeoutMs;
   }
 
-  acquireProvider(providerId) {
-    this.inFlight.set(providerId, (this.inFlight.get(providerId) ?? 0) + 1);
-  }
-
   waitForCircuitChange(providerId, delayMs, signal) {
     if (signal.aborted) return Promise.resolve(false);
     return new Promise((resolve) => {
@@ -2212,8 +2314,7 @@ export class RouterEngine {
     for (const notify of [...waiters]) notify();
   }
 
-  releaseProvider(providerId, probe) {
-    this.inFlight.set(providerId, Math.max(0, (this.inFlight.get(providerId) ?? 1) - 1));
+  releaseSelection(providerId, probe) {
     if (probe) {
       this.halfOpenProbes.delete(providerId);
       queueMicrotask(() => this.notifyCircuitChange(providerId));
@@ -2665,6 +2766,8 @@ export class RouterEngine {
   }
 
   markChatSupport(providerId, status, error = null) {
+    const current = getProvider(this.db, providerId);
+    if (!current || chatSupportMode(current) !== "auto") return;
     this.db.prepare(`
       UPDATE providers
          SET chat_support_status = ?, chat_support_checked_at = ?, chat_support_error = ?, updated_at = ?

@@ -195,6 +195,16 @@ test("persists provider priority and weight in a route group", () => {
   assert.equal(listRoutes(db).groups[0].provider_retry_attempts, 2);
 });
 
+test("does not enforce the legacy provider concurrency setting", () => {
+  const provider = saveProvider(db, {
+    name: "Unlimited concurrency upstream",
+    base_url: "http://127.0.0.1:19991/v1",
+    max_concurrency: 1,
+  });
+  const engine = new RouterEngine(db, directory, () => {});
+  assert.equal(engine.providerAvailable(provider), true);
+});
+
 test("persists benchmark multiplier without changing route cost data", () => {
   const provider = saveProvider(db, {
     name: "Measured upstream",

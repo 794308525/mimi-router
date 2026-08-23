@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { CircleGauge, Eye, EyeOff, Gauge, GripVertical, KeyRound, MoreHorizontal, Plus, RefreshCcw, Save, Server, Trash2 } from "lucide-react";
 import { api } from "../api";
-import type { Notice, OfficialPricing, Provider, RouteGroup, Stats } from "../types";
+import type { ChatSupportMode, Notice, OfficialPricing, Provider, RouteGroup, Stats } from "../types";
 import { DEFAULT_TEST_MODEL } from "../types";
 import { EmptyState, ExternalLink, Modal, PageHeader, ProviderStatus, formatCacheHitRate, formatDuration, formatTime, formatUsd } from "../components/Common";
 import { BenchmarkDialog } from "../components/BenchmarkDialog";
@@ -15,7 +15,6 @@ type ProviderForm = {
   api_key: string;
   test_model: string;
   cost_multiplier: number;
-  max_concurrency: number;
   request_timeout_ms: number;
   stream_idle_timeout_ms: number;
   stream_progress_timeout_ms: number;
@@ -23,6 +22,7 @@ type ProviderForm = {
   cooldown_ms: number;
   headers_text: string;
   enabled: boolean;
+  chat_support_mode: ChatSupportMode;
 };
 
 type ProviderStatsRange = "today" | "yesterday" | "seven_days";
@@ -33,7 +33,6 @@ const emptyForm: ProviderForm = {
   api_key: "",
   test_model: DEFAULT_TEST_MODEL,
   cost_multiplier: 1,
-  max_concurrency: 8,
   request_timeout_ms: 900000,
   stream_idle_timeout_ms: 20000,
   stream_progress_timeout_ms: 40000,
@@ -41,6 +40,7 @@ const emptyForm: ProviderForm = {
   cooldown_ms: 30000,
   headers_text: "{}",
   enabled: true,
+  chat_support_mode: "auto",
 };
 
 export function ProvidersPage({
@@ -134,7 +134,6 @@ export function ProvidersPage({
       api_key: "",
       test_model: provider.test_model,
       cost_multiplier: provider.cost_multiplier,
-      max_concurrency: provider.max_concurrency,
       request_timeout_ms: provider.request_timeout_ms,
       stream_idle_timeout_ms: provider.stream_idle_timeout_ms,
       stream_progress_timeout_ms: provider.stream_progress_timeout_ms,
@@ -142,6 +141,7 @@ export function ProvidersPage({
       cooldown_ms: provider.cooldown_ms,
       headers_text: prettyJson(provider.headers_json),
       enabled: provider.enabled,
+      chat_support_mode: provider.chat_support_mode ?? "auto",
     });
     setShowApiKey(false);
     setEditing(provider);
@@ -499,7 +499,7 @@ export function ProvidersPage({
                   data-provider-id={provider.id}
                   className={`${!provider.enabled ? "disabled-row" : ""} ${draggingProvider === provider.id ? "is-dragging" : ""} ${dragOverProvider === provider.id && dragOverPosition ? `is-drag-over-${dragOverPosition}` : ""}`.trim()}
                 >
-                  <td>
+                  <td data-label="调用顺序">
                     <div className="provider-priority-cell">
                       <button
                         className="provider-drag-handle"
@@ -512,7 +512,7 @@ export function ProvidersPage({
                       <strong>{index + 1}</strong>
                     </div>
                   </td>
-                  <td>
+                  <td data-label="中转">
                     {providerNamesVisible ? (
                       <ExternalLink className="table-primary" href={providerHomepageUrl(provider.base_url)} title={`打开 ${providerHomepageUrl(provider.base_url)}`}>
                         <span className="provider-monogram"><Server size={16} /></span>
@@ -525,24 +525,24 @@ export function ProvidersPage({
                       </span>
                     )}
                   </td>
-                  <td><code className="model-code">{provider.test_model}</code></td>
-                  <td><span className="tabular">{formatMultiplier(provider.cost_multiplier)}</span></td>
-                  <td>
+                  <td data-label="检测模型"><code className="model-code">{provider.test_model}</code></td>
+                  <td data-label="测评倍率"><span className="tabular provider-card-value">{formatMultiplier(provider.cost_multiplier)}</span></td>
+                  <td data-label="状态">
                     <div className="provider-status-cell">
                       <ProviderStatus provider={provider} />
                       <span
-                        className={`provider-chat-support ${provider.chat_support_status}`}
-                        title={provider.chat_support_error || "Chat Completions 能力会在首次 Chat 请求时自动探测"}
-                      >Chat {provider.chat_support_status === "supported" ? "原生" : provider.chat_support_status === "unsupported" ? "转换" : "待探测"}</span>
+                        className={`provider-chat-support ${chatSupportBadgeClass(provider)}`}
+                        title={chatSupportBadgeTitle(provider)}
+                      >{chatSupportBadgeLabel(provider)}</span>
                       <label className="switch" title={provider.enabled ? `停用 ${provider.name}` : `启用 ${provider.name}`}>
                         <input type="checkbox" aria-label={provider.enabled ? `停用 ${provider.name}` : `启用 ${provider.name}`} checked={provider.enabled} onChange={() => toggle(provider)} />
                         <span />
                       </label>
                     </div>
                   </td>
-                  <td><span className="tabular">{provider.consecutive_failures}/{provider.failure_threshold}</span></td>
-                  <td>{formatTime(provider.last_success_at)}</td>
-                  <td>
+                  <td data-label="失败"><span className="tabular provider-card-value">{provider.consecutive_failures}/{provider.failure_threshold}</span></td>
+                  <td data-label="最近成功"><span className="provider-card-value">{formatTime(provider.last_success_at)}</span></td>
+                  <td data-label="时段统计">
                     <div className="provider-period-stats">
                       <span>请求 <strong>{usage?.upstream_calls ?? 0}</strong></span>
                       <span>平均首字 <strong>{formatDuration(usage?.avg_ttft_ms)}</strong></span>
@@ -551,7 +551,7 @@ export function ProvidersPage({
                       <span>缓存 <strong>{formatCacheHitRate(usage?.cache_input_tokens ?? 0, usage?.cached_tokens ?? 0)}</strong></span>
                     </div>
                   </td>
-                  <td>
+                  <td data-label="操作">
                     <div className="row-actions">
                       <button className="icon-button" type="button" title={`流式检测 ${provider.test_model}`} onClick={() => test(provider)} disabled={testing === provider.id || testingAll || resettingAll}>
                         <RefreshCcw size={16} className={testing === provider.id || testingAll ? "spin" : ""} />
@@ -588,7 +588,25 @@ export function ProvidersPage({
               <label>测试模型（固定流式检测）<select required value={form.test_model} onChange={(event) => setForm({ ...form, test_model: event.target.value })}>{testModels.map((model) => <option key={model} value={model}>{model}</option>)}</select></label>
               <label>测评倍率<input type="number" min="0" step="0.01" required value={form.cost_multiplier} onChange={(event) => setForm({ ...form, cost_multiplier: Number(event.target.value) })} /></label>
             </div>
+            <div className="form-grid three-columns">
+              <fieldset className="chat-protocol-field">
+                <legend>Chat 协议策略</legend>
+                <div className="chat-protocol-tabs" role="radiogroup" aria-label="Chat 协议策略">
+                  {([ ["auto", "自动探测"], ["chat", "原生 Chat Completions"], ["responses", "Chat 自动转 Responses"] ] as const).map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      role="radio"
+                      aria-checked={form.chat_support_mode === mode}
+                      className={form.chat_support_mode === mode ? "active" : ""}
+                      onClick={() => setForm({ ...form, chat_support_mode: mode })}
+                    >{label}</button>
+                  ))}
+                </div>
+              </fieldset>
+            </div>
             <p className="form-hint">测评倍率只参与中转测评排序，不影响消耗金额。</p>
+            <p className="form-hint">不支持 Chat 的渠道请选择“Chat 自动转 Responses”，避免等待上游返回不明确的错误。</p>
             <label>
               API Key
               <div className="input-with-icon secret-input">
@@ -604,8 +622,7 @@ export function ProvidersPage({
               <label>首字后无数据超时（秒）<input type="number" min="1" value={form.stream_idle_timeout_ms / 1000} onChange={(event) => setForm({ ...form, stream_idle_timeout_ms: Number(event.target.value) * 1000 })} /></label>
               <label>首字后无进展超时（秒）<input type="number" min="1" value={form.stream_progress_timeout_ms / 1000} onChange={(event) => setForm({ ...form, stream_progress_timeout_ms: Number(event.target.value) * 1000 })} /></label>
             </div>
-            <div className="form-grid three-columns">
-              <label>最大并发<input type="number" min="1" value={form.max_concurrency} onChange={(event) => setForm({ ...form, max_concurrency: Number(event.target.value) })} /></label>
+            <div className="form-grid two-columns">
               <label>失败阈值<input type="number" min="1" value={form.failure_threshold} onChange={(event) => setForm({ ...form, failure_threshold: Number(event.target.value) })} /></label>
               <label>熔断冷却（秒）<input type="number" min="1" value={form.cooldown_ms / 1000} onChange={(event) => setForm({ ...form, cooldown_ms: Number(event.target.value) * 1000 })} /></label>
             </div>
@@ -639,6 +656,29 @@ function prettyJson(value: string) {
 
 function formatMultiplier(value: number) {
   return `${Number(value ?? 1).toFixed(2)}×`;
+}
+
+function chatSupportBadgeLabel(provider: Provider) {
+  const mode = provider.chat_support_mode ?? "auto";
+  if (mode === "chat") return "Chat 原生";
+  if (mode === "responses") return "Chat 转换";
+  if (provider.chat_support_status === "supported") return "Chat 原生";
+  if (provider.chat_support_status === "unsupported") return "Chat 转换";
+  return "Chat 待探测";
+}
+
+function chatSupportBadgeClass(provider: Provider) {
+  const mode = provider.chat_support_mode ?? "auto";
+  if (mode === "chat" || (mode === "auto" && provider.chat_support_status === "supported")) return "supported";
+  if (mode === "responses" || (mode === "auto" && provider.chat_support_status === "unsupported")) return "unsupported";
+  return "unknown";
+}
+
+function chatSupportBadgeTitle(provider: Provider) {
+  const mode = provider.chat_support_mode ?? "auto";
+  if (mode === "chat") return "已手动指定原生 Chat Completions";
+  if (mode === "responses") return "已手动指定 Chat 自动转换为 Responses";
+  return provider.chat_support_error || "Chat Completions 能力会在首次 Chat 请求时自动探测";
 }
 
 function sameOrder(left: string[], right: string[]) {

@@ -27,7 +27,7 @@ export function isChatEndpointUnsupported(status, responseText) {
   return ["unsupported_endpoint", "endpoint_not_supported", "not_implemented"].includes(code);
 }
 
-export function chatRequestToResponses(body) {
+export function chatRequestToResponses(body, { promptCacheKey = null } = {}) {
   if (!Array.isArray(body?.messages)) {
     throw new ChatCompatibilityError("Chat Completions 请求缺少 messages 数组", "messages");
   }
@@ -55,6 +55,8 @@ export function chatRequestToResponses(body) {
     "top_p",
     "user",
   ]);
+  if (!String(result.prompt_cache_key || "").trim() && promptCacheKey) result.prompt_cache_key = promptCacheKey;
+  copyDefined(body, result, ["previous_response_id"]);
   if (body.max_completion_tokens != null) result.max_output_tokens = body.max_completion_tokens;
   else if (body.max_tokens != null) result.max_output_tokens = body.max_tokens;
   if (body.reasoning_effort != null) result.reasoning = { effort: body.reasoning_effort };
