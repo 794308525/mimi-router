@@ -1490,7 +1490,7 @@ test("honors a manually configured Responses bridge for Chat", async () => {
         "thread-id": "chat-cache-session",
       },
       body: JSON.stringify({
-        model: "gpt-5.6-terra",
+        model: "gpt-5.6-terra-xhigh",
         messages: [{ role: "user", content: "hello" }],
         previous_response_id: "resp_previous_chat",
         stream: false,
@@ -1505,7 +1505,12 @@ test("honors a manually configured Responses bridge for Chat", async () => {
     assert.equal(detail.attempt_count, 1);
     assert.equal(detail.upstream_protocol, "responses");
     assert.equal(detail.protocol_wrapped, 1);
+    assert.equal(detail.requested_model, "gpt-5.6-terra-xhigh");
+    assert.equal(detail.upstream_model, "gpt-5.6-terra");
+    assert.equal(detail.reasoning_effort, "xhigh");
     const upstreamRequest = await fetch(`http://127.0.0.1:${mockPort}/__last-responses`).then((result) => result.json());
+    assert.equal(upstreamRequest.body.model, "gpt-5.6-terra");
+    assert.deepEqual(upstreamRequest.body.reasoning, { effort: "xhigh" });
     assert.equal(upstreamRequest.body.prompt_cache_key, "chat-cache-session");
     assert.equal(upstreamRequest.body.previous_response_id, "resp_previous_chat");
     assert.equal(upstreamRequest.headers["thread-id"], "chat-cache-session");

@@ -307,10 +307,11 @@ export function TokenStack({ input, cached, output }: {
   );
 }
 
-export function ModelRuntime({ requestedModel, actualModel, reasoningEffort, providerName, initialProviderName, providerChanged }: {
+export function ModelRuntime({ requestedModel, actualModel, reasoningEffort, protocolWrapped, providerName, initialProviderName, providerChanged }: {
   requestedModel: string | null | undefined;
   actualModel: string | null | undefined;
   reasoningEffort: string | null | undefined;
+  protocolWrapped?: boolean;
   providerName?: string | null;
   initialProviderName?: string | null;
   providerChanged?: boolean;
@@ -318,15 +319,18 @@ export function ModelRuntime({ requestedModel, actualModel, reasoningEffort, pro
   const requested = requestedModel?.trim();
   const actual = actualModel?.trim();
   const fallback = requested || actual || "识别中";
-  const changed = Boolean(requested && actual && requested.toLowerCase() !== actual.toLowerCase());
-  const title = changed ? `${requested} → ${actual}` : fallback;
+  const normalizedRequested = requested?.replace(/-(?:xhigh|ultra|max|high|medium|low)$/i, "");
+  const convertedByRouter = Boolean(protocolWrapped && requested && actual
+    && normalizedRequested?.toLowerCase() === actual.toLowerCase());
+  const changed = Boolean(!convertedByRouter && requested && actual && requested.toLowerCase() !== actual.toLowerCase());
+  const title = changed ? `${requested} → ${actual}` : convertedByRouter ? actual : fallback;
 
   return (
     <span className={`model-runtime ${changed ? "is-changed" : ""}`}>
       <strong className="model-runtime-line" title={title}>
-        {changed ? <><span>{requested}</span><ArrowRight size={12} /><span>{actual}</span></> : fallback}
+        {changed ? <><span>{requested}</span><ArrowRight size={12} /><span>{actual}</span></> : convertedByRouter ? actual : fallback}
       </strong>
-      <small className="model-runtime-meta">强度 {reasoningEffortLabel(reasoningEffort)}{providerName && <> · <ProviderRoute initialName={initialProviderName} finalName={providerName} changed={providerChanged} /></>}</small>
+      <small className="model-runtime-meta">{reasoningEffortLabel(reasoningEffort)}{providerName && <> · <ProviderRoute initialName={initialProviderName} finalName={providerName} changed={providerChanged} /></>}</small>
     </span>
   );
 }
@@ -344,15 +348,8 @@ export function ProviderRoute({ initialName, finalName, changed }: {
 }
 
 export function reasoningEffortLabel(effort: string | null | undefined) {
-  const labels: Record<string, string> = {
-    minimal: "极低",
-    low: "低",
-    medium: "中",
-    high: "高",
-    xhigh: "超高",
-  };
   const normalized = effort?.trim().toLowerCase();
-  return normalized ? labels[normalized] || effort || "未指定" : "未指定";
+  return normalized || "未指定强度";
 }
 
 function compactNumber(value: number, divisor: number, suffix: string) {

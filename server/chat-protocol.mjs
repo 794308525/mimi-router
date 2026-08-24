@@ -27,6 +27,17 @@ export function isChatEndpointUnsupported(status, responseText) {
   return ["unsupported_endpoint", "endpoint_not_supported", "not_implemented"].includes(code);
 }
 
+const MODEL_REASONING_SUFFIXES = ["xhigh", "ultra", "max", "high", "medium", "low"];
+const DEFAULT_CHAT_REASONING_EFFORT = "medium";
+
+export function splitModelReasoningEffort(model) {
+  const normalized = String(model || "").trim();
+  const suffixPattern = MODEL_REASONING_SUFFIXES.join("|");
+  const match = normalized.match(new RegExp(`^(.+)-(${suffixPattern})$`, "i"));
+  if (!match) return { model: normalized, reasoningEffort: DEFAULT_CHAT_REASONING_EFFORT };
+  return { model: match[1], reasoningEffort: match[2].toLowerCase() };
+}
+
 export function chatRequestToResponses(body, { promptCacheKey = null } = {}) {
   if (!Array.isArray(body?.messages)) {
     throw new ChatCompatibilityError("Chat Completions 请求缺少 messages 数组", "messages");
@@ -35,8 +46,9 @@ export function chatRequestToResponses(body, { promptCacheKey = null } = {}) {
 
   const input = [];
   for (const message of body.messages) input.push(...chatMessageToResponseItems(message));
+  const model = splitModelReasoningEffort(body.model);
   const result = {
-    model: body.model,
+    model: model.model,
     input,
     stream: true,
   };
@@ -60,6 +72,7 @@ export function chatRequestToResponses(body, { promptCacheKey = null } = {}) {
   if (body.max_completion_tokens != null) result.max_output_tokens = body.max_completion_tokens;
   else if (body.max_tokens != null) result.max_output_tokens = body.max_tokens;
   if (body.reasoning_effort != null) result.reasoning = { effort: body.reasoning_effort };
+  else if (model.reasoningEffort) result.reasoning = { effort: model.reasoningEffort };
   if (body.tools != null) result.tools = body.tools.map(chatToolToResponseTool);
   if (body.tool_choice != null) result.tool_choice = chatToolChoiceToResponseToolChoice(body.tool_choice);
 

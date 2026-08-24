@@ -453,7 +453,7 @@ function isAllowedManagementOrigin(origin) {
   }
   try {
     const url = new URL(origin);
-    if (url.protocol !== "http:" || url.port !== "5176") return false;
+    if (url.protocol !== "http:" || url.port !== "5177") return false;
     if (url.hostname === "127.0.0.1" || url.hostname === "localhost") return true;
     if (/^10(?:\.\d{1,3}){3}$/.test(url.hostname)) return true;
     if (/^192\.168(?:\.\d{1,3}){2}$/.test(url.hostname)) return true;

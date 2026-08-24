@@ -231,7 +231,7 @@ export function RequestsPage({
                   <tr key={request.id} className={running ? "running-row" : ""} onClick={() => openDetail(request)}>
                     <td><div className="request-status-cell"><RequestStatus status={request.status} /><RequestFailureReason request={request} /></div></td>
                     <td><span className="tabular">{formatTime(request.started_at)}</span></td>
-                    <td><ModelRuntime requestedModel={request.requested_model} actualModel={request.actual_upstream_model} reasoningEffort={request.reasoning_effort} /></td>
+                    <td><ModelRuntime requestedModel={request.requested_model} actualModel={request.actual_upstream_model} reasoningEffort={request.reasoning_effort} protocolWrapped={request.protocol_wrapped === 1} /></td>
                     <td>{request.provider_name || request.initial_provider_name ? <ProviderRoute initialName={request.initial_provider_name} finalName={request.provider_name} changed={providerRouteChanged(request)} /> : <span className="text-muted">等待路由</span>}</td>
                     <td><ElapsedTime startedAt={request.started_at} durationMs={request.duration_ms} running={running} /></td>
                     <td><strong className={`first-token-value ${firstToken.tone}`} title={firstToken.title}>{formatDuration(request.ttft_ms)}</strong></td>

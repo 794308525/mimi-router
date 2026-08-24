@@ -2,6 +2,38 @@
 
 This project follows semantic versioning. Every feature update must keep the application version and both language variants of the release notes in sync.
 
+## 0.2.59 - 2026-08-24
+
+- Refined reasoning effort display to show only the English value when present and a clear unspecified label otherwise.
+
+## 0.2.58 - 2026-08-24
+
+- Reasoning effort now displays its English value directly in request records.
+
+## 0.2.57 - 2026-08-24
+
+- Fixed normal Chat-to-Responses model normalization being displayed as a model change.
+
+## 0.2.56 - 2026-08-24
+
+- Adjusted model and provider labels in recent usage records to `10px`.
+
+## 0.2.55 - 2026-08-24
+
+- Slightly reduced model and provider label text in recent usage records to improve readability and space for long model names.
+
+## 0.2.54 - 2026-08-24
+
+- Development mode now uses separate frontend and backend ports to avoid conflicts with the production gateway.
+
+## 0.2.53 - 2026-08-24
+
+- Chat requests now default to `medium` reasoning effort when none is provided.
+
+## 0.2.52 - 2026-08-24
+
+- Fixed Chat-to-Responses requests dropping reasoning effort encoded in model names, automatically splitting names such as `gpt-5.6-terra-xhigh` into the base model and reasoning effort.
+
 ## 0.2.51 - 2026-08-23
 
 - Fixed live dashboard requests being mislabeled as Chat → Responses before the upstream protocol is known.

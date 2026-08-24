@@ -138,7 +138,7 @@ export default function App() {
         <div className="brand-mark error"><Cable size={25} /></div>
         <h1>本地网关未连接</h1>
         <p>{error || "请退出应用后重新打开。"}</p>
-        <code>http://127.0.0.1:18080/health</code>
+        <code>{import.meta.env.DEV ? "http://127.0.0.1:19080/health" : "http://127.0.0.1:18080/health"}</code>
         <button className="button button-primary" type="button" onClick={() => { setLoading(true); void load(); }}><RefreshCcw size={16} />重新连接</button>
       </main>
     );

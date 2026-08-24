@@ -1,6 +1,102 @@
 {
-  "currentVersion": "0.2.51",
+  "currentVersion": "0.2.59",
   "releases": [
+    {
+      "version": "0.2.59",
+      "date": "2026-08-24",
+      "notes": {
+        "zh-CN": [
+          "优化推理强度显示：有强度时仅显示英文值，无强度时显示未指定强度。"
+        ],
+        "en": [
+          "Refined reasoning effort display to show only the English value when present and a clear unspecified label otherwise."
+        ]
+      }
+    },
+    {
+      "version": "0.2.58",
+      "date": "2026-08-24",
+      "notes": {
+        "zh-CN": [
+          "推理强度在记录中直接显示英文值。"
+        ],
+        "en": [
+          "Reasoning effort now displays its English value directly in request records."
+        ]
+      }
+    },
+    {
+      "version": "0.2.57",
+      "date": "2026-08-24",
+      "notes": {
+        "zh-CN": [
+          "修复 Chat 转 Responses 的正常模型归一化被误显示为模型变化。"
+        ],
+        "en": [
+          "Fixed normal Chat-to-Responses model normalization being displayed as a model change."
+        ]
+      }
+    },
+    {
+      "version": "0.2.56",
+      "date": "2026-08-24",
+      "notes": {
+        "zh-CN": [
+          "将最近使用记录中的模型与中转名称字号调整为 10px。"
+        ],
+        "en": [
+          "Adjusted model and provider labels in recent usage records to 10px."
+        ]
+      }
+    },
+    {
+      "version": "0.2.55",
+      "date": "2026-08-24",
+      "notes": {
+        "zh-CN": [
+          "略微缩小最近使用记录中的模型与中转名称字号，改善长模型名的阅读和布局空间。"
+        ],
+        "en": [
+          "Slightly reduced model and provider label text in recent usage records to improve readability and space for long model names."
+        ]
+      }
+    },
+    {
+      "version": "0.2.54",
+      "date": "2026-08-24",
+      "notes": {
+        "zh-CN": [
+          "开发模式改用独立的前后端端口，避免与正式版网关发生端口冲突。"
+        ],
+        "en": [
+          "Development mode now uses separate frontend and backend ports to avoid conflicts with the production gateway."
+        ]
+      }
+    },
+    {
+      "version": "0.2.53",
+      "date": "2026-08-24",
+      "notes": {
+        "zh-CN": [
+          "Chat 请求未传推理强度时默认使用 medium。"
+        ],
+        "en": [
+          "Chat requests now default to medium reasoning effort when none is provided."
+        ]
+      }
+    },
+    {
+      "version": "0.2.52",
+      "date": "2026-08-24",
+      "notes": {
+        "zh-CN": [
+          "修复 Chat 转 Responses 在模型名带推理强度后缀时未向上游发送强度的问题，并自动将 gpt-5.6-terra-xhigh 等模型名拆分为基础模型和推理强度。"
+        ],
+        "en": [
+          "Fixed Chat-to-Responses requests dropping reasoning effort encoded in model names, automatically splitting names such as gpt-5.6-terra-xhigh into the base model and reasoning effort."
+        ]
+      }
+    },
     {
       "version": "0.2.51",
       "date": "2026-08-23",

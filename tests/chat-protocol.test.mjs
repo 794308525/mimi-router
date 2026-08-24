@@ -5,6 +5,7 @@ import {
   chatRequestToResponses,
   createResponsesToChatBridge,
   isChatEndpointUnsupported,
+  splitModelReasoningEffort,
   upstreamEndpointUrl,
 } from "../server/chat-protocol.mjs";
 
@@ -51,6 +52,38 @@ test("preserves explicit and derived conversation cache metadata", () => {
 
   const derived = chatRequestToResponses({ model: "gpt-5.6-terra", messages: [] }, { promptCacheKey: "thread-cache-key" });
   assert.equal(derived.prompt_cache_key, "thread-cache-key");
+});
+
+test("derives reasoning effort from Chat model suffixes", () => {
+  assert.deepEqual(splitModelReasoningEffort("gpt-5.6-terra-xhigh"), {
+    model: "gpt-5.6-terra",
+    reasoningEffort: "xhigh",
+  });
+  assert.deepEqual(splitModelReasoningEffort("gpt-5.6-terra"), {
+    model: "gpt-5.6-terra",
+    reasoningEffort: "medium",
+  });
+
+  const converted = chatRequestToResponses({
+    model: "gpt-5.6-terra-xhigh",
+    messages: [{ role: "user", content: "hello" }],
+  });
+  assert.equal(converted.model, "gpt-5.6-terra");
+  assert.deepEqual(converted.reasoning, { effort: "xhigh" });
+
+  const defaulted = chatRequestToResponses({
+    model: "gpt-5.6-terra",
+    messages: [{ role: "user", content: "hello" }],
+  });
+  assert.deepEqual(defaulted.reasoning, { effort: "medium" });
+
+  const explicit = chatRequestToResponses({
+    model: "gpt-5.6-terra-xhigh",
+    messages: [{ role: "user", content: "hello" }],
+    reasoning_effort: "low",
+  });
+  assert.equal(explicit.model, "gpt-5.6-terra");
+  assert.deepEqual(explicit.reasoning, { effort: "low" });
 });
 
 test("rejects Chat parameters that cannot be represented by Responses", () => {

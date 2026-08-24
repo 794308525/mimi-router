@@ -17,6 +17,7 @@ import {
   chatUsageToResponseUsage,
   createResponsesToChatBridge,
   isChatEndpointUnsupported,
+  splitModelReasoningEffort,
   upstreamEndpointUrl,
 } from "./chat-protocol.mjs";
 
@@ -508,7 +509,21 @@ export class RouterEngine {
     }
 
     const requestedModel = String(body.model ?? DEFAULT_MODEL);
-    const reasoningEffort = extractReasoningEffort(body);
+    const modelSelection = clientProtocol === "chat"
+      ? splitModelReasoningEffort(requestedModel)
+      : { model: requestedModel, reasoningEffort: "" };
+    const upstreamRequestedModel = modelSelection.model || requestedModel;
+    const explicitReasoningEffort = extractReasoningEffort(body);
+    const reasoningEffort = explicitReasoningEffort || modelSelection.reasoningEffort;
+    const upstreamChatBody = clientProtocol === "chat"
+      ? {
+        ...body,
+        model: upstreamRequestedModel,
+        ...(explicitReasoningEffort || !modelSelection.reasoningEffort
+          ? {}
+          : { reasoning_effort: modelSelection.reasoningEffort }),
+      }
+      : body;
     const conversationId = extractConversationId(body, req);
     const stableConversationId = extractStableConversationId(body, req);
     const explicitConversationCacheKey = promptCacheKeyForConversation(stableConversationId);
@@ -537,7 +552,7 @@ export class RouterEngine {
     });
     this.emitRequest(requestId, "request.status_changed");
 
-    const route = this.resolveRoute(requestedModel);
+    const route = this.resolveRoute(upstreamRequestedModel);
     if (!route) {
       this.finishRequest(requestId, startedMono, {
         status: "failed",
@@ -629,7 +644,7 @@ export class RouterEngine {
       const attemptId = randomUUID();
       const attemptStarted = new Date();
       const attemptMono = performance.now();
-      const upstreamModel = requestedModel;
+      const upstreamModel = upstreamRequestedModel;
       const providerChatMode = chatSupportMode(provider);
       const upstreamProtocol = clientProtocol === "chat"
         && (providerChatMode === "responses"
@@ -642,12 +657,12 @@ export class RouterEngine {
       try {
         if (protocolWrapped) {
           wrappedChatBody ??= chatRequestToResponses(
-            { ...body, model: upstreamModel },
+            upstreamChatBody,
             { promptCacheKey: conversationCacheKey },
           );
           upstreamBody = wrappedChatBody;
         } else {
-          upstreamBody = { ...body, model: upstreamModel };
+          upstreamBody = { ...upstreamChatBody, model: upstreamModel };
         }
       } catch (error) {
         if (!(error instanceof ChatCompatibilityError)) throw error;
@@ -898,7 +913,7 @@ export class RouterEngine {
 
       try {
         const firstTokenTimeoutMs = (isStream || protocolWrapped)
-          ? this.resolveFirstTokenTimeoutMs(routerSettings, provider.id, requestedModel)
+          ? this.resolveFirstTokenTimeoutMs(routerSettings, provider.id, upstreamRequestedModel)
           : 0;
         if (firstTokenTimeoutMs > 0) {
           this.updateRequest(requestId, { first_token_timeout_ms: firstTokenTimeoutMs });
@@ -949,7 +964,7 @@ export class RouterEngine {
                 body,
                 requestId,
                 requestStartedMono: startedMono,
-                requestedModel,
+                requestedModel: upstreamRequestedModel,
                 sequence: sequence + 1,
                 provider: raceSelection.provider,
                 probe: raceSelection.probe,

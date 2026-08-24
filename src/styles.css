@@ -720,7 +720,7 @@ input:disabled, select:disabled { background: #edf0f1; }
 .overview-usage-table .home-table-title { min-height: 62px; padding-top: 8px; padding-bottom: 12px; }
 .overview-usage-table th { height: 40px; font-size: 12px; }
 .overview-usage-table td { height: 58px; font-size: 13px; }
-.usage-record-link strong { font-size: 13px; }
+.usage-record-link strong { font-size: 10px; }
 .usage-record-link small,
 .usage-record-link .model-runtime-meta,
 .usage-record-link .record-routing-meta,

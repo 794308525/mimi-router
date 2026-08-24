@@ -760,7 +760,7 @@ export function Overview({
                   </td>
                   <td>
                     <button className="usage-record-link" type="button" onClick={() => onOpenRequest(request)}>
-                      <ModelRuntime requestedModel={request.requested_model} actualModel={request.actual_upstream_model} reasoningEffort={request.reasoning_effort} providerName={providerNamesVisible ? request.provider_name : null} initialProviderName={providerNamesVisible ? request.initial_provider_name : null} providerChanged={providerRouteChanged(request)} />
+                      <ModelRuntime requestedModel={request.requested_model} actualModel={request.actual_upstream_model} reasoningEffort={request.reasoning_effort} protocolWrapped={request.protocol_wrapped === 1} providerName={providerNamesVisible ? request.provider_name : null} initialProviderName={providerNamesVisible ? request.initial_provider_name : null} providerChanged={providerRouteChanged(request)} />
                       {(() => {
                         const routingMeta = requestRoutingMeta(request);
                         return routingMeta ? <small className="record-routing-meta">{routingMeta}</small> : null;
