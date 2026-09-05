@@ -289,8 +289,10 @@ const server = createServer((req, res) => {
       url: req.url,
       body,
       headers: {
+        "content-type": req.headers["content-type"] || null,
         "thread-id": req.headers["thread-id"] || null,
         "x-codex-turn-metadata": req.headers["x-codex-turn-metadata"] || null,
+        "x-provider-header": req.headers["x-provider-header"] || null,
       },
     };
     if (req.url?.includes("/rawchat-block/")) {

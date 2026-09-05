@@ -3086,7 +3086,10 @@ function upstreamHeaders(incoming, provider, secret, acceptOverride = null) {
   headers["content-type"] = "application/json";
   headers.accept = acceptOverride || incoming.accept || "text/event-stream, application/json";
   if (secret) headers.authorization = `Bearer ${secret}`;
-  Object.assign(headers, parseHeaders(provider.headers_json));
+  for (const [key, value] of Object.entries(parseHeaders(provider.headers_json))) {
+    if (key.toLowerCase() === "content-type") continue;
+    headers[key] = value;
+  }
   return headers;
 }
 

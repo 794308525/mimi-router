@@ -128,6 +128,41 @@ test("records immediately, fails over, streams unchanged, and captures usage", a
   assert.ok(Number.isInteger(detail.attempts[1].upstream_wait_ms));
 });
 
+test("forces JSON content type upstream when client and provider headers disagree", async () => {
+  const provider = await post("/api/providers", {
+    name: "JSON content type enforcement",
+    base_url: `http://127.0.0.1:${mockPort}/ok/v1`,
+    default_model: "mock-model",
+    headers: {
+      "Content-Type": "text/plain",
+      "x-provider-header": "preserved",
+    },
+  });
+  const routes = await get("/api/routes");
+  const group = routes.groups[0];
+  try {
+    await put(`/api/route-groups/${group.id}`, {
+      ...group,
+      failover_enabled: false,
+      max_attempts: 1,
+      members: [{ provider_id: provider.id, priority: 1, weight: 100, enabled: true }],
+    });
+    const response = await fetch(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/problem+json" },
+      body: JSON.stringify({ model: "mock-model", input: "hello", stream: false }),
+    });
+    assert.equal(response.status, 200);
+    await response.json();
+    const upstreamRequest = await fetch(`http://127.0.0.1:${mockPort}/__last-responses`).then((result) => result.json());
+    assert.equal(upstreamRequest.headers["content-type"], "application/json");
+    assert.equal(upstreamRequest.headers["x-provider-header"], "preserved");
+  } finally {
+    await put(`/api/route-groups/${group.id}`, group);
+    await send("DELETE", `/api/providers/${provider.id}`, {});
+  }
+});
+
 test("blocks only the rawchat conversation and keeps the provider healthy", async () => {
   const rawchat = await post("/api/providers", {
     name: "Rawchat conversation block",
