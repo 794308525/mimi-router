@@ -351,7 +351,7 @@ export function createDatabase(dataDir) {
      WHERE total_cost_usd IS NULL AND attempt_count = 0
        AND status IN ('failed', 'client_disconnected', 'cancelled', 'interrupted');
   `));
-  runOnce(db, "2026-08-official-cost-backfill", () => backfillOfficialCosts(db));
+  runOnce(db, "2026-09-astra-cost-backfill", () => backfillOfficialCosts(db));
   runOnce(db, "2026-08-attempt-usage-backfill", () => db.exec(`
     UPDATE request_attempts
        SET input_tokens = (SELECT r.input_tokens FROM requests r WHERE r.id = request_attempts.request_id),
@@ -1406,9 +1406,9 @@ function requestSummary(db, since, until = null) {
 function backfillOfficialCosts(db) {
   const rows = db.prepare(`
     SELECT id, upstream_model, requested_model, input_tokens, output_tokens,
-      cached_tokens, cache_creation_tokens
+      cached_tokens, cache_creation_tokens, total_cost_usd
     FROM requests
-    WHERE total_cost_usd IS NULL AND input_tokens IS NOT NULL AND output_tokens IS NOT NULL
+    WHERE input_tokens IS NOT NULL AND output_tokens IS NOT NULL
   `).all();
   if (rows.length === 0) return;
 
@@ -1427,6 +1427,7 @@ function backfillOfficialCosts(db) {
       pricing: resolveModelPricing(db, row.upstream_model || row.requested_model),
     });
     if (!calculated) continue;
+    if (row.total_cost_usd !== null && Math.abs(Number(row.total_cost_usd) - calculated.total_cost_usd) < 1e-12) continue;
     update.run(
       calculated.input_cost_usd,
       calculated.cached_input_cost_usd,

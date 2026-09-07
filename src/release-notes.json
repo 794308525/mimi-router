@@ -1,6 +1,14 @@
 {
-  "currentVersion": "0.2.59",
+  "currentVersion": "0.2.60",
   "releases": [
+    {
+      "version": "0.2.60",
+      "date": "2026-09-05",
+      "notes": {
+        "zh-CN": ["扩展官方定价变更后的历史记录重算，并保留 415 兼容链路。"],
+        "en": ["Recalculated historical records after official pricing changes while retaining the 415 compatibility path."]
+      }
+    },
     {
       "version": "0.2.59",
       "date": "2026-08-24",

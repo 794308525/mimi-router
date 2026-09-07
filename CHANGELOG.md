@@ -2,6 +2,10 @@
 
 This project follows semantic versioning. Every feature update must keep the application version and both language variants of the release notes in sync.
 
+## 0.2.60 - 2026-09-05
+
+- Recalculated historical records after official pricing changes while retaining the 415 compatibility path.
+
 ## 0.2.59 - 2026-08-24
 
 - Refined reasoning effort display to show only the English value when present and a clear unspecified label otherwise.

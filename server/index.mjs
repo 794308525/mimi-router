@@ -80,7 +80,11 @@ const server = createServer(async (req, res) => {
       return json(res, 200, serviceInfo());
     }
     if (req.method === "GET" && url.pathname === "/v1/models") {
-      return json(res, 200, await getCodexModelCatalog());
+      const routes = listRoutes(db);
+      const configured = db.prepare("SELECT test_model FROM providers WHERE enabled = 1").all().map((row) => row.test_model);
+      const routed = routes.rules.map((rule) => rule.model).filter(Boolean);
+      const extras = [...configured, ...routed].map((id) => ({ id, slug: id, object: "model", owned_by: "mimi-router", supported_in_api: true }));
+      return json(res, 200, await getCodexModelCatalog(extras));
     }
     if (req.method === "POST" && url.pathname === "/v1/responses/compact") {
       return engine.handle(req, res, { upstreamEndpoint: "responses/compact" });

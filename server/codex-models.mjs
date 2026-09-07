@@ -6,9 +6,17 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 let catalogPromise;
 
-export function getCodexModelCatalog() {
+export function getCodexModelCatalog(extraModels = []) {
   catalogPromise ??= loadCodexModelCatalog();
-  return catalogPromise;
+  return catalogPromise.then((catalog) => {
+    const seen = new Set();
+    const models = [...(catalog.models ?? []), ...extraModels].filter((item) => {
+      const id = typeof item === "string" ? item : item?.id;
+      if (!id || seen.has(id)) return false;
+      seen.add(id); return true;
+    });
+    return { models };
+  });
 }
 
 async function loadCodexModelCatalog() {
