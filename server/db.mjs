@@ -372,6 +372,7 @@ export function createDatabase(dataDir) {
          SELECT id FROM requests WHERE attempt_count = 1 AND input_tokens IS NOT NULL
        );
   `));
+  runOnce(db, "2026-09-official-cost-backfill-v2", () => backfillOfficialCosts(db));
   runOnce(db, "2026-08-split-race-modes", () => db.prepare(`
     UPDATE router_settings
        SET first_token_timeout_mode = 'race_different', updated_at = ?
@@ -580,7 +581,22 @@ function seedPricing(db) {
       long_context_cache_write_per_million, long_context_output_per_million,
       source_url, source_type, sort_order, active, synced_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'builtin', ?, 1, ?)
-    ON CONFLICT(model) DO NOTHING
+    ON CONFLICT(model) DO UPDATE SET
+      display_name = excluded.display_name,
+      input_per_million = excluded.input_per_million,
+      cached_input_per_million = excluded.cached_input_per_million,
+      cache_write_per_million = excluded.cache_write_per_million,
+      output_per_million = excluded.output_per_million,
+      long_context_threshold = excluded.long_context_threshold,
+      long_context_input_per_million = excluded.long_context_input_per_million,
+      long_context_cached_input_per_million = excluded.long_context_cached_input_per_million,
+      long_context_cache_write_per_million = excluded.long_context_cache_write_per_million,
+      long_context_output_per_million = excluded.long_context_output_per_million,
+      source_url = excluded.source_url,
+      sort_order = excluded.sort_order,
+      active = 1,
+      synced_at = excluded.synced_at
+    WHERE model_pricing.source_type = 'builtin'
   `);
   const timestamp = now();
   OFFICIAL_PRICING.forEach((pricing, index) => statement.run(
@@ -690,6 +706,7 @@ export function saveOfficialPricing(db, update) {
         update.updated_at,
       );
     });
+    backfillOfficialCosts(db);
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");
@@ -1403,32 +1420,49 @@ function requestSummary(db, since, until = null) {
   `).get(...(until ? [since, until] : [since]));
 }
 
-function backfillOfficialCosts(db) {
-  const rows = db.prepare(`
-    SELECT id, upstream_model, requested_model, input_tokens, output_tokens,
-      cached_tokens, cache_creation_tokens, total_cost_usd
-    FROM requests
-    WHERE input_tokens IS NOT NULL AND output_tokens IS NOT NULL
+export function backfillOfficialCosts(db) {
+  const attempts = db.prepare(`
+    SELECT a.id, a.request_id, a.actual_upstream_model, a.input_tokens, a.output_tokens,
+      a.cached_tokens, a.cache_creation_tokens, a.total_cost_usd, a.pricing_model, a.pricing_source,
+      a.cost_status, a.status, a.stream_phase, a.last_stream_event, a.ended_at,
+      r.actual_upstream_model AS request_actual_model,
+      r.upstream_model AS request_upstream_model, r.requested_model, r.status AS request_status
+    FROM request_attempts a
+    JOIN requests r ON r.id = a.request_id
+    WHERE a.ended_at IS NOT NULL
+      AND a.status NOT IN ('received', 'routing', 'connecting', 'streaming')
+      AND (a.input_tokens IS NOT NULL OR a.output_tokens IS NOT NULL)
   `).all();
-  if (rows.length === 0) return;
-
-  const update = db.prepare(`
-    UPDATE requests SET input_cost_usd = ?, cached_input_cost_usd = ?,
+  const attemptUpdate = db.prepare(`
+    UPDATE request_attempts SET input_cost_usd = ?, cached_input_cost_usd = ?,
       cache_creation_cost_usd = ?, output_cost_usd = ?, total_cost_usd = ?,
-      pricing_model = ?, pricing_source = ?, cost_status = 'confirmed' WHERE id = ?
+      pricing_model = ?, pricing_source = ?, cost_status = ? WHERE id = ?
   `);
-  for (const row of rows) {
+  for (const row of attempts) {
+    const resolved = resolvePricingCandidate(db, [
+      row.actual_upstream_model,
+      row.request_upstream_model,
+      row.request_actual_model,
+      row.requested_model,
+      row.pricing_model,
+    ]);
+    const model = resolved?.model;
+    const pricing = resolved?.pricing;
     const calculated = calculateOfficialCost({
-      model: row.upstream_model || row.requested_model,
+      model,
       inputTokens: row.input_tokens,
       outputTokens: row.output_tokens,
       cachedTokens: row.cached_tokens,
       cacheCreationTokens: row.cache_creation_tokens,
-      pricing: resolveModelPricing(db, row.upstream_model || row.requested_model),
+      pricing,
     });
     if (!calculated) continue;
-    if (row.total_cost_usd !== null && Math.abs(Number(row.total_cost_usd) - calculated.total_cost_usd) < 1e-12) continue;
-    update.run(
+    const complete = row.status === "completed" || row.stream_phase === "completed" || row.last_stream_event === "response.completed";
+    const costStatus = complete ? "confirmed" : (row.cost_status === "partial" ? "partial" : "partial");
+    if (row.total_cost_usd !== null
+      && Math.abs(Number(row.total_cost_usd) - calculated.total_cost_usd) < 1e-12
+      && row.cost_status === costStatus) continue;
+    attemptUpdate.run(
       calculated.input_cost_usd,
       calculated.cached_input_cost_usd,
       calculated.cache_creation_cost_usd,
@@ -1436,9 +1470,84 @@ function backfillOfficialCosts(db) {
       calculated.total_cost_usd,
       calculated.pricing_model,
       calculated.pricing_source,
+      costStatus,
       row.id,
     );
   }
+
+  const requestUpdate = db.prepare(`
+    UPDATE requests SET input_tokens = ?, output_tokens = ?, cached_tokens = ?, cache_creation_tokens = ?,
+      input_cost_usd = ?, cached_input_cost_usd = ?, cache_creation_cost_usd = ?, output_cost_usd = ?,
+      total_cost_usd = ?, pricing_model = ?, pricing_source = ?, cost_status = ? WHERE id = ?
+  `);
+  const requests = db.prepare(`
+    SELECT id, actual_upstream_model, upstream_model, requested_model, input_tokens, output_tokens,
+      cached_tokens, cache_creation_tokens, pricing_model, cost_status, status
+    FROM requests
+    WHERE ended_at IS NOT NULL
+      AND status NOT IN ('received', 'routing', 'connecting', 'streaming')
+  `).all();
+  const aggregate = db.prepare(`
+    SELECT SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens,
+      SUM(cached_tokens) AS cached_tokens, SUM(cache_creation_tokens) AS cache_creation_tokens,
+      SUM(input_cost_usd) AS input_cost_usd, SUM(cached_input_cost_usd) AS cached_input_cost_usd,
+      SUM(cache_creation_cost_usd) AS cache_creation_cost_usd, SUM(output_cost_usd) AS output_cost_usd,
+      SUM(total_cost_usd) AS total_cost_usd, MAX(pricing_model) AS pricing_model,
+      MAX(pricing_source) AS pricing_source,
+      MAX(CASE WHEN cost_status = 'unknown' THEN 1 ELSE 0 END) AS has_unknown,
+      MAX(CASE WHEN cost_status = 'partial' THEN 1 ELSE 0 END) AS has_partial,
+      MAX(CASE WHEN total_cost_usd IS NOT NULL THEN 1 ELSE 0 END) AS has_cost,
+      COUNT(*) AS count, COUNT(total_cost_usd) AS priced_count
+    FROM request_attempts
+    WHERE request_id = ?
+      AND ended_at IS NOT NULL
+      AND status NOT IN ('received', 'routing', 'connecting', 'streaming')
+  `);
+  for (const row of requests) {
+    const sums = aggregate.get(row.id);
+    if (sums?.count && sums.priced_count) {
+      const costStatus = sums.has_unknown ? "partial" : sums.has_partial ? "partial" : "confirmed";
+      requestUpdate.run(
+        sums.input_tokens, sums.output_tokens, sums.cached_tokens, sums.cache_creation_tokens,
+        sums.input_cost_usd, sums.cached_input_cost_usd, sums.cache_creation_cost_usd, sums.output_cost_usd,
+        sums.total_cost_usd, sums.pricing_model, sums.pricing_source, costStatus, row.id,
+      );
+      continue;
+    }
+    if (sums?.count) {
+      requestUpdate.run(
+        row.input_tokens, row.output_tokens, row.cached_tokens, row.cache_creation_tokens,
+        null, null, null, null, null, null, null, 'unknown', row.id,
+      );
+      continue;
+    }
+    const resolved = resolvePricingCandidate(db, [row.actual_upstream_model, row.upstream_model, row.requested_model, row.pricing_model]);
+    const model = resolved?.model;
+    const calculated = calculateOfficialCost({
+      model,
+      inputTokens: row.input_tokens,
+      outputTokens: row.output_tokens,
+      cachedTokens: row.cached_tokens,
+      cacheCreationTokens: row.cache_creation_tokens,
+      pricing: resolved?.pricing,
+    });
+    if (!calculated) continue;
+    requestUpdate.run(
+      row.input_tokens, row.output_tokens, row.cached_tokens, row.cache_creation_tokens,
+      calculated.input_cost_usd, calculated.cached_input_cost_usd, calculated.cache_creation_cost_usd,
+      calculated.output_cost_usd, calculated.total_cost_usd, calculated.pricing_model,
+      calculated.pricing_source, row.status === "completed" ? "confirmed" : "partial", row.id,
+    );
+  }
+}
+
+function resolvePricingCandidate(db, candidates) {
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const pricing = resolveModelPricing(db, candidate);
+    if (pricing) return { model: candidate, pricing };
+  }
+  return null;
 }
 
 function positiveInt(value, fallback) {

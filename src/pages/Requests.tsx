@@ -328,7 +328,7 @@ export function RequestDetail({
               <div className="attempt-item" key={attempt.id}>
                 <span className={`attempt-node ${attempt.status}`} />
                 <div><strong>{attempt.sequence}. {attempt.provider_name}</strong><small>{formatTime(attempt.started_at)} · {attempt.protocol_wrapped ? "Responses 转 Chat" : attempt.upstream_protocol === "chat" ? "原生 Chat" : "Responses"} · {formatTokens(attempt.input_tokens == null && attempt.output_tokens == null ? null : (attempt.input_tokens ?? 0) + (attempt.output_tokens ?? 0))} · {formatRequestCost(attempt.total_cost_usd, attempt.cost_status)}</small><small>{attemptTimingLabel(attempt)}</small></div>
-                <span title={attempt.error_message || undefined}>{failureReasonLabel(attempt.termination_reason || attempt.error_category || streamPhaseLabel(attempt.stream_phase) || (attempt.status === "completed" ? "完成" : attempt.status))}</span>
+                <div className="attempt-result"><span>{failureReasonLabel(attempt.termination_reason || attempt.error_category || streamPhaseLabel(attempt.stream_phase) || (attempt.status === "completed" ? "完成" : attempt.status))}</span>{attempt.error_message && <details className="attempt-error-details" onClick={(event) => event.stopPropagation()}><summary aria-label="展开上游错误信息">展开错误信息</summary><p>{attempt.error_message}</p></details>}</div>
                 <strong>{formatDuration(attempt.duration_ms)}</strong>
               </div>
             ))}

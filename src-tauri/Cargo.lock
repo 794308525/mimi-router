@@ -467,7 +467,7 @@ dependencies = [
 
 [[package]]
 name = "codex-relay-router"
-version = "0.2.60"
+version = "0.2.80"
 dependencies = [
  "serde_json",
  "tauri",

@@ -42,8 +42,6 @@ export function chatRequestToResponses(body, { promptCacheKey = null } = {}) {
   if (!Array.isArray(body?.messages)) {
     throw new ChatCompatibilityError("Chat Completions 请求缺少 messages 数组", "messages");
   }
-  rejectUnsupportedChatFields(body);
-
   const input = [];
   for (const message of body.messages) input.push(...chatMessageToResponseItems(message));
   const model = splitModelReasoningEffort(body.model);
@@ -65,6 +63,8 @@ export function chatRequestToResponses(body, { promptCacheKey = null } = {}) {
     "store",
     "temperature",
     "top_p",
+    "logprobs",
+    "top_logprobs",
     "user",
   ]);
   if (!String(result.prompt_cache_key || "").trim() && promptCacheKey) result.prompt_cache_key = promptCacheKey;
@@ -73,8 +73,10 @@ export function chatRequestToResponses(body, { promptCacheKey = null } = {}) {
   else if (body.max_tokens != null) result.max_output_tokens = body.max_tokens;
   if (body.reasoning_effort != null) result.reasoning = { effort: body.reasoning_effort };
   else if (model.reasoningEffort) result.reasoning = { effort: model.reasoningEffort };
-  if (body.tools != null) result.tools = body.tools.map(chatToolToResponseTool);
-  if (body.tool_choice != null) result.tool_choice = chatToolChoiceToResponseToolChoice(body.tool_choice);
+  const tools = body.tools ?? body.functions?.map((fn) => ({ type: "function", function: fn }));
+  if (tools != null) result.tools = tools.map(chatToolToResponseTool);
+  const toolChoice = body.tool_choice ?? legacyFunctionCallToToolChoice(body.function_call);
+  if (toolChoice != null) result.tool_choice = chatToolChoiceToResponseToolChoice(toolChoice);
 
   const text = {};
   if (body.response_format != null) text.format = chatResponseFormatToResponseFormat(body.response_format);
@@ -176,11 +178,65 @@ export function createResponsesToChatBridge({ stream, includeUsage, requestedMod
   }
 
   function hydrateOutput(response) {
-    for (const [outputIndex, item] of (response?.output || []).entries()) {
+    // A few OpenAI-compatible Responses providers omit `output[]` and only
+    // return the convenience aggregate.  Treat it as a normal message so a
+    // successful response is not incorrectly reported as "empty content".
+    const aggregateText = typeof response?.output_text === "string"
+      ? response.output_text
+      : typeof response?.text === "string"
+        ? response.text
+        : typeof response?.output === "string"
+          ? response.output
+        : "";
+    if (!state.text && aggregateText) {
+      state.text = aggregateText;
+      state.meaningfulOutput = true;
+      if (stream) {
+        ensureRole();
+        emit(chunk([{ index: 0, delta: { content: aggregateText }, logprobs: null, finish_reason: null }]));
+      }
+    }
+    // Some gateways advertise a Responses endpoint but return a Chat-shaped
+    // completion object. Normalize that common compatibility response too.
+    const choice = response?.choices?.[0];
+    const chatMessage = choice?.message;
+    const chatText = typeof chatMessage?.content === "string" ? chatMessage.content : "";
+    if (!state.text && chatText) {
+      state.text = chatText;
+      state.meaningfulOutput = true;
+      if (stream) {
+        ensureRole();
+        emit(chunk([{ index: 0, delta: { content: chatText }, logprobs: null, finish_reason: null }]));
+      }
+    }
+    if (Array.isArray(chatMessage?.tool_calls)) {
+      for (const [index, call] of chatMessage.tool_calls.entries()) {
+        if (call?.type !== "function" || !call.function?.name) continue;
+        const tool = ensureTool({
+          id: call.id,
+          call_id: call.id,
+          name: call.function.name,
+          type: "function_call",
+          arguments: call.function.arguments,
+        }, index);
+        if (!tool.arguments && call.function.arguments) {
+          tool.arguments = normalizeToolArguments(call.function.arguments);
+        }
+        state.meaningfulOutput = true;
+      }
+    }
+    const outputItems = Array.isArray(response?.output) ? response.output : [];
+    for (const [outputIndex, item] of outputItems.entries()) {
       if (item?.type === "message") {
-        const text = (item.content || []).filter((part) => part?.type === "output_text").map((part) => part.text || "").join("");
-        const refusal = (item.content || []).filter((part) => part?.type === "refusal").map((part) => part.refusal || "").join("");
-        const annotations = (item.content || []).flatMap((part) => part?.annotations || []);
+        const contentParts = typeof item.content === "string"
+          ? [{ type: "text", text: item.content }]
+          : Array.isArray(item.content) ? item.content : [];
+        const text = contentParts
+          .filter((part) => ["output_text", "text"].includes(part?.type) && part?.text != null)
+          .map((part) => String(part.text))
+          .join("");
+        const refusal = contentParts.filter((part) => part?.type === "refusal").map((part) => part.refusal || "").join("");
+        const annotations = contentParts.flatMap((part) => part?.annotations || []);
         if (!state.text && text) {
           state.text = text;
           state.meaningfulOutput = true;
@@ -291,6 +347,15 @@ export function createResponsesToChatBridge({ stream, includeUsage, requestedMod
       state.meaningfulOutput = true;
       return;
     }
+    // Managed Responses tools (web/file search, computer, MCP, …) may emit
+    // several seconds of work-state events before producing assistant text.
+    // They are valid progress, not an empty response or a reason to race a
+    // second upstream request.
+    if (isManagedToolEvent(payload)) {
+      state.meaningfulOutput = true;
+      if (stream) ensureRole();
+      return;
+    }
     if (type === "response.function_call_arguments.delta") {
       const tool = ensureTool({ id: payload.item_id }, payload.output_index ?? 0, false);
       const delta = String(payload.delta || "");
@@ -323,6 +388,11 @@ export function createResponsesToChatBridge({ stream, includeUsage, requestedMod
   }
 
   return {
+    pushPayload(payload) {
+      state.output = [];
+      handlePayload(payload);
+      return state.output;
+    },
     push(buffer) {
       state.output = [];
       decoder.push(buffer);
@@ -335,6 +405,9 @@ export function createResponsesToChatBridge({ stream, includeUsage, requestedMod
     },
     get meaningfulOutput() {
       return state.meaningfulOutput;
+    },
+    get hasContent() {
+      return Boolean(state.text || state.refusal || state.tools.length > 0);
     },
     get completed() {
       return state.completed;
@@ -427,10 +500,6 @@ function chatMessageToResponseItems(message) {
       output: toolOutput(message.content),
     }];
   }
-  if (message.function_call != null) {
-    throw new ChatCompatibilityError("降级路径暂不支持已废弃的 function_call 消息，请使用 tool_calls", "messages");
-  }
-
   const items = [];
   if (message.content != null) {
     items.push({ role, content: responseMessageContent(message.content) });
@@ -444,9 +513,17 @@ function chatMessageToResponseItems(message) {
         type: "function_call",
         call_id: call.id,
         name: call.function.name,
-        arguments: String(call.function.arguments || ""),
+          arguments: normalizeToolArguments(call.function.arguments),
       });
     }
+  }
+  if (role === "assistant" && message.function_call?.name) {
+    items.push({
+      type: "function_call",
+      call_id: String(message.function_call.id || `call_legacy_${Date.now()}`),
+      name: String(message.function_call.name),
+      arguments: normalizeToolArguments(message.function_call.arguments || "{}"),
+    });
   }
   return items;
 }
@@ -455,13 +532,25 @@ function responseMessageContent(content) {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) throw new ChatCompatibilityError("消息 content 必须是字符串或数组", "messages");
   return content.map((part) => {
-    if (part?.type === "text") return { type: "input_text", text: String(part.text || "") };
-    if (part?.type === "image_url") {
+    if (part?.type === "text" || part?.type === "input_text") {
+      return { type: "input_text", text: String(part.text || "") };
+    }
+    if (part?.type === "image_url" || part?.type === "input_image") {
       const image = typeof part.image_url === "string" ? { url: part.image_url } : part.image_url;
       return {
         type: "input_image",
-        image_url: image?.url,
+        image_url: image?.url || part.image_url,
         ...(image?.detail ? { detail: image.detail } : {}),
+      };
+    }
+    if (part?.type === "input_audio" || part?.type === "audio") {
+      const audio = part.input_audio || part.audio || {};
+      return {
+        type: "input_audio",
+        input_audio: {
+          data: String(audio.data || audio.url || ""),
+          ...(audio.format ? { format: String(audio.format) } : {}),
+        },
       };
     }
     if (part?.type === "file") {
@@ -591,4 +680,26 @@ function safeJson(value, fallback) {
   } catch {
     return fallback;
   }
+}
+
+function normalizeToolArguments(value) {
+  if (value == null || value === "") return "";
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+function legacyFunctionCallToToolChoice(value) {
+  if (value == null || value === "none" || value === "auto") return value;
+  if (value === "required") return "required";
+  if (value?.name) return { type: "function", function: { name: value.name } };
+  return null;
+}
+
+function isManagedToolEvent(payload) {
+  const type = String(payload?.type || "");
+  if (type === "response.output_item.added") {
+    return ["web_search_call", "file_search_call", "computer_call", "code_interpreter_call",
+      "image_generation_call", "mcp_call", "custom_tool_call"].includes(String(payload.item?.type || ""));
+  }
+  return /(?:web_search|file_search|computer|code_interpreter|image_generation|mcp|custom_tool)/
+    .test(type) && /(?:\.in_progress|\.searching|\.generating|\.interpreting|\.completed)$/.test(type);
 }

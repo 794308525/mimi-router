@@ -581,7 +581,11 @@ export class RouterEngine {
     }
 
     const attempted = new Set();
-    let maxAttempts = route.group.failover_enabled ? route.group.max_attempts : 1;
+    const traeClient = isTraeClient(req);
+    // Trae treats a gateway 504 as terminal and will not give the router a
+    // chance to try the next route. Keep one retry inside the gateway even
+    // when transparent failover is disabled.
+    let maxAttempts = route.group.failover_enabled ? route.group.max_attempts : (traeClient ? 2 : 1);
     const providerRetryLimit = route.group.provider_retry_attempts ?? 2;
     const providerRetryCounts = new Map();
     const chatWrappedProviders = new Set();
@@ -866,7 +870,7 @@ export class RouterEngine {
             category: "conversation_blocked",
             message: conversationBlockedMessage(conversationId, message),
           };
-          if (!route.group.failover_enabled) break;
+          if (!route.group.failover_enabled && !traeClient) break;
           continue;
         }
         const retryCategory = transientHtmlGatewayFailure
@@ -912,14 +916,16 @@ export class RouterEngine {
       }
 
       try {
-        const firstTokenTimeoutMs = (isStream || protocolWrapped)
+        const configuredFirstTokenTimeoutMs = (isStream || protocolWrapped)
           ? this.resolveFirstTokenTimeoutMs(routerSettings, provider.id, upstreamRequestedModel)
           : 0;
-        if (firstTokenTimeoutMs > 0) {
-          this.updateRequest(requestId, { first_token_timeout_ms: firstTokenTimeoutMs });
-          this.updateAttempt(attemptId, { first_token_timeout_ms: firstTokenTimeoutMs });
+        const firstTokenTimeoutMs = isRaceSafeRequest(body) ? configuredFirstTokenTimeoutMs : 0;
+        if (configuredFirstTokenTimeoutMs > 0) {
+          this.updateRequest(requestId, { first_token_timeout_ms: configuredFirstTokenTimeoutMs });
+          this.updateAttempt(attemptId, { first_token_timeout_ms: configuredFirstTokenTimeoutMs });
         }
         const forwardContext = {
+          body,
           requestId,
           requestStartedMono: startedMono,
           attemptId,
@@ -1011,7 +1017,7 @@ export class RouterEngine {
             return;
           }
           finalError = { status: 504, category: "first_token_timeout", message: safeMessage(error) };
-          if (!route.group.failover_enabled) break;
+          if (!route.group.failover_enabled && !traeClient) break;
           continue;
         }
         this.releaseSelection(provider.id, probe);
@@ -1044,7 +1050,7 @@ export class RouterEngine {
           }
           this.recordFailure(provider, error.category);
           finalError = { status: error.status ?? upstream.status, category: error.category, message: error.message };
-          if (!route.group.failover_enabled) break;
+          if (!route.group.failover_enabled && !traeClient) break;
           continue;
         }
         if (error instanceof FirstTokenTimeoutError && !clientTerminationReason(clientController) && !res.headersSent) {
@@ -1857,13 +1863,27 @@ export class RouterEngine {
       const reader = upstream.body?.getReader();
       if (!reader) throw new Error("上游响应正文为空");
       const buffered = [];
-      await readUntilFirstConvertedOutput({
-        reader,
-        bridge,
-        buffered,
-        attemptStartedMono: attemptMono,
-        timeoutMs: firstTokenTimeoutMs,
-      });
+      const contentType = String(upstream.headers.get("content-type") || "").toLowerCase();
+      if (!contentType.includes("text/event-stream")) {
+        const chunks = [];
+        while (true) {
+          const result = await reader.read();
+          if (result.done) break;
+          chunks.push(Buffer.from(result.value));
+        }
+        const text = Buffer.concat(chunks).toString("utf8");
+        const payload = JSON.parse(text);
+        buffered.push(...bridge.pushPayload({ type: "response.completed", response: payload }));
+        terminalReached = true;
+      } else {
+        await readUntilFirstConvertedOutput({
+          reader,
+          bridge,
+          buffered,
+          attemptStartedMono: attemptMono,
+          timeoutMs: firstTokenTimeoutMs,
+        });
+      }
       if (semanticFailure || bridge.failure) throw semanticFailure || bridgeFailureError(bridge.failure, upstream.status);
       if (!bridge.meaningfulOutput) throw new Error("Responses SSE 流在首个输出前结束");
       if (!firstOutputRecorded) markFirstOutput();
@@ -1901,6 +1921,13 @@ export class RouterEngine {
         }
       }
       if (!bridge.completed && !bridge.failure) throw new Error("Responses SSE 流缺少结束事件");
+      if (!bridge.hasContent && !bridge.failure) {
+        throw bridgeFailureError({
+          message: "上游响应为空内容",
+          type: "server_error",
+          code: "empty_content",
+        }, upstream.status);
+      }
       if (!firstOutputRecorded && bridge.meaningfulOutput) markFirstOutput();
       if (!isStream) {
         if (bridge.failure || semanticFailure) {
@@ -3093,7 +3120,14 @@ function retryAfterMs(headers) {
 function extractUpstreamError(text, status) {
   try {
     const payload = JSON.parse(text);
-    return String(payload.error?.message || payload.message || `上游返回 ${status}`).slice(0, 500);
+    const error = payload?.error;
+    const message = typeof error === "string"
+      ? error
+      : error?.message
+        || payload?.message
+        || payload?.detail
+        || payload?.error_description;
+    return String(message || `上游返回 ${status}`).slice(0, 500);
   } catch {
     return text.trim().slice(0, 500) || `上游返回 ${status}`;
   }
@@ -3235,6 +3269,10 @@ function extractResponseId(payload) {
 
 function isMeaningfulStreamOutput(payload) {
   const type = String(payload?.type || payload?.object || "");
+  // Responses managed tools can legitimately occupy the stream before text
+  // exists.  Count their work-state events as output for race decisions;
+  // otherwise Trae/Codex may start a duplicate request and surface a 502.
+  if (isManagedToolProgressPayload(payload)) return true;
   if (type === "chat.completion.chunk") {
     return (payload?.choices || []).some((choice) => {
       if (choice?.finish_reason != null) return true;
@@ -3246,6 +3284,47 @@ function isMeaningfulStreamOutput(payload) {
   if (!type.endsWith(".delta")) return false;
   const delta = payload?.delta ?? payload?.arguments_delta ?? payload?.text;
   return delta == null || (typeof delta === "string" ? delta.length > 0 : true);
+}
+
+function responsePayloadHasContent(payload) {
+  const response = payload?.response ?? payload;
+  const type = String(payload?.type || payload?.object || "");
+  if (typeof payload?.delta === "string" && payload.delta.length > 0) return true;
+  if (typeof response?.output_text === "string" && response.output_text.length > 0) return true;
+  if (typeof response?.text === "string" && response.text.length > 0) return true;
+  if (typeof response?.output === "string" && response.output.length > 0) return true;
+  if (Array.isArray(response?.choices)
+    && response.choices.some((choice) => Boolean(choice?.message?.content || choice?.delta?.content || choice?.message?.tool_calls?.length))) {
+    return true;
+  }
+  if (Array.isArray(response?.output) && response.output.some((item) => {
+    if (["function_call", "custom_tool_call"].includes(String(item?.type || ""))) return true;
+    return item?.type === "message" && (typeof item.content === "string"
+      ? item.content.length > 0
+      : Array.isArray(item.content) && item.content.some((part) => part?.text || part?.refusal));
+  })) return true;
+  return type === "response.refusal.delta" && Boolean(payload.delta);
+}
+
+function isTraeClient(req) {
+  const headers = req?.headers || {};
+  const clientSignals = [
+    headers["user-agent"],
+    headers["x-client-name"],
+    headers["x-app-name"],
+    headers["x-client"],
+  ].filter(Boolean).map(String);
+  return clientSignals.some((value) => value.toLowerCase().includes("trae"));
+}
+
+function isManagedToolProgressPayload(payload) {
+  const type = String(payload?.type || payload?.object || "");
+  if (type === "response.output_item.added") {
+    return ["web_search_call", "file_search_call", "computer_call", "code_interpreter_call",
+      "image_generation_call", "mcp_call", "custom_tool_call"].includes(String(payload?.item?.type || ""));
+  }
+  return /(?:web_search|file_search|computer|code_interpreter|image_generation|mcp|custom_tool)/
+    .test(type) && /(?:\.in_progress|\.searching|\.generating|\.interpreting|\.completed)$/.test(type);
 }
 
 function isStreamProgressPayload(payload) {

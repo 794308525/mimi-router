@@ -8,8 +8,18 @@ test("estimates gpt-5.6-sol usage with official token prices", () => {
     inputTokens: 687,
     outputTokens: 8,
   });
-  assert.equal(result.total_cost_usd, 0.003675);
+  assert.equal(result.total_cost_usd, 0.002908);
   assert.equal(result.pricing_model, "gpt-5.6-sol");
+});
+
+test("estimates gpt-6-astra usage with official token prices", () => {
+  const result = calculateOfficialCost({
+    model: "gpt-6-astra",
+    inputTokens: 1000,
+    outputTokens: 100,
+  });
+  assert.equal(result.total_cost_usd, 0.015);
+  assert.equal(result.pricing_model, "gpt-6-astra");
 });
 
 test("always bills at official 1x pricing regardless of a channel multiplier", () => {
@@ -31,11 +41,11 @@ test("prices cached input and cache writes separately", () => {
     cacheCreationTokens: 100,
     outputTokens: 100,
   });
-  assert.equal(result.input_cost_usd, 0.0025);
-  assert.equal(result.cached_input_cost_usd, 0.0002);
-  assert.equal(result.cache_creation_cost_usd, 0.000625);
-  assert.equal(result.output_cost_usd, 0.003);
-  assert.equal(result.total_cost_usd, 0.006325);
+  assert.equal(result.input_cost_usd, 0.002);
+  assert.equal(result.cached_input_cost_usd, 0.00016);
+  assert.equal(result.cache_creation_cost_usd, 0.0005);
+  assert.equal(result.output_cost_usd, 0.002);
+  assert.equal(result.total_cost_usd, 0.00466);
 });
 
 test("applies official long-context multipliers above 272K input tokens", () => {

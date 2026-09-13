@@ -86,15 +86,35 @@ test("derives reasoning effort from Chat model suffixes", () => {
   assert.deepEqual(explicit.reasoning, { effort: "low" });
 });
 
-test("rejects Chat parameters that cannot be represented by Responses", () => {
-  assert.throws(
-    () => chatRequestToResponses({ model: "gpt-5.6-terra", messages: [], n: 2 }),
-    (error) => error instanceof ChatCompatibilityError && error.param === "n",
-  );
-  assert.throws(
-    () => chatRequestToResponses({ model: "gpt-5.6-terra", messages: [], stop: ["END"] }),
-    (error) => error instanceof ChatCompatibilityError && error.param === "stop",
-  );
+test("accepts common legacy Chat parameters without breaking Responses conversion", () => {
+  const converted = chatRequestToResponses({
+    model: "gpt-5.6-terra",
+    messages: [{ role: "assistant", function_call: { name: "weather", arguments: "{}" } }],
+    functions: [{ name: "weather", parameters: { type: "object" } }],
+    function_call: { name: "weather" },
+    stop: ["END"],
+    frequency_penalty: 0.2,
+  });
+  assert.equal(converted.tools[0].name, "weather");
+  assert.deepEqual(converted.tool_choice, { type: "function", name: "weather" });
+  assert.equal(converted.stop, undefined);
+});
+
+test("converts Trae multimodal content parts without rejecting the request", () => {
+  const converted = chatRequestToResponses({
+    model: "gpt-5.6-terra",
+    messages: [{
+      role: "user",
+      content: [
+        { type: "input_text", text: "describe this" },
+        { type: "input_image", image_url: "data:image/png;base64,abc" },
+        { type: "input_audio", input_audio: { data: "abc", format: "wav" } },
+      ],
+    }],
+  });
+  assert.deepEqual(converted.input[0].content[0], { type: "input_text", text: "describe this" });
+  assert.equal(converted.input[0].content[1].type, "input_image");
+  assert.equal(converted.input[0].content[2].type, "input_audio");
 });
 
 test("converts Responses text stream to Chat chunks and usage", () => {
@@ -153,6 +173,152 @@ test("aggregates Responses function calls into a non-stream Chat completion", ()
     type: "function",
     function: { name: "weather", arguments: "{\"city\":\"BJ\"}" },
   });
+});
+
+test("accepts providers that return response.output_text without output items", () => {
+  const bridge = createResponsesToChatBridge({
+    stream: false,
+    includeUsage: false,
+    requestedModel: "gpt-5.6-sol",
+  });
+  bridge.push(frame({
+    type: "response.completed",
+    response: {
+      id: "resp_aggregate",
+      model: "gpt-5.6-sol",
+      output_text: "hello from a compatible provider",
+    },
+  }));
+  assert.equal(bridge.failure, null);
+  assert.equal(bridge.completion().choices[0].message.content, "hello from a compatible provider");
+});
+
+test("bridges a non-SSE Responses JSON completion", () => {
+  const bridge = createResponsesToChatBridge({
+    stream: false,
+    includeUsage: false,
+    requestedModel: "gpt-5.6-sol",
+  });
+  bridge.pushPayload({
+    type: "response.completed",
+    response: {
+      id: "resp_json",
+      model: "gpt-5.6-sol",
+      output: [{ type: "message", content: [{ type: "output_text", text: "json ok" }] }],
+    },
+  });
+  assert.equal(bridge.completed, true);
+  assert.equal(bridge.completion().choices[0].message.content, "json ok");
+});
+
+test("accepts text content parts used by some OpenAI-compatible providers", () => {
+  const bridge = createResponsesToChatBridge({
+    stream: false,
+    includeUsage: false,
+    requestedModel: "gpt-5.6-sol",
+  });
+  bridge.pushPayload({
+    type: "response.completed",
+    response: {
+      id: "resp_text_part",
+      model: "gpt-5.6-sol",
+      output: [{ type: "message", content: [{ type: "text", text: "text part ok" }] }],
+    },
+  });
+  assert.equal(bridge.completion().choices[0].message.content, "text part ok");
+});
+
+test("bridges a Chat-shaped completion returned by a Responses endpoint", () => {
+  const bridge = createResponsesToChatBridge({
+    stream: false,
+    includeUsage: false,
+    requestedModel: "gpt-5.6-sol",
+  });
+  bridge.pushPayload({
+    type: "response.completed",
+    response: {
+      id: "chat-shaped",
+      model: "gpt-5.6-sol",
+      choices: [{ message: { role: "assistant", content: "fallback ok" }, finish_reason: "stop" }],
+    },
+  });
+  assert.equal(bridge.completion().choices[0].message.content, "fallback ok");
+});
+
+test("accepts a string response.output aggregate", () => {
+  const bridge = createResponsesToChatBridge({
+    stream: false,
+    includeUsage: false,
+    requestedModel: "gpt-5.6-sol",
+  });
+  bridge.pushPayload({
+    type: "response.completed",
+    response: { id: "resp_string_output", model: "gpt-5.6-sol", output: "plain output" },
+  });
+  assert.equal(bridge.completion().choices[0].message.content, "plain output");
+});
+
+test("accepts string content inside a Responses message output item", () => {
+  const bridge = createResponsesToChatBridge({
+    stream: false,
+    includeUsage: false,
+    requestedModel: "gpt-5.6-sol",
+  });
+  bridge.pushPayload({
+    type: "response.completed",
+    response: {
+      id: "resp_string_content",
+      output: [{ type: "message", content: "plain message content" }],
+    },
+  });
+  assert.equal(bridge.completion().choices[0].message.content, "plain message content");
+});
+
+test("serializes object-shaped legacy tool arguments", () => {
+  const converted = chatRequestToResponses({
+    model: "gpt-5.6-sol",
+    messages: [{
+      role: "assistant",
+      function_call: { name: "weather", arguments: { city: "Beijing" } },
+    }],
+  });
+  assert.equal(converted.input[0].arguments, '{"city":"Beijing"}');
+});
+
+test("preserves Chat logprob options when the Responses provider supports them", () => {
+  const converted = chatRequestToResponses({
+    model: "gpt-5.6-sol",
+    messages: [{ role: "user", content: "hello" }],
+    logprobs: true,
+    top_logprobs: 5,
+  });
+  assert.equal(converted.logprobs, true);
+  assert.equal(converted.top_logprobs, 5);
+});
+
+test("distinguishes tool progress from a response containing usable content", () => {
+  const bridge = createResponsesToChatBridge({
+    stream: false,
+    includeUsage: false,
+    requestedModel: "gpt-5.6-sol",
+  });
+  bridge.pushPayload({ type: "response.web_search_call.searching" });
+  bridge.pushPayload({ type: "response.completed", response: { id: "empty", output: [] } });
+  assert.equal(bridge.meaningfulOutput, true);
+  assert.equal(bridge.hasContent, false);
+});
+
+test("treats managed tool work states as progress before assistant text", () => {
+  const bridge = createResponsesToChatBridge({
+    stream: true,
+    includeUsage: false,
+    requestedModel: "gpt-5.6-sol",
+  });
+  bridge.push(frame({ type: "response.web_search_call.in_progress" }));
+  assert.equal(bridge.meaningfulOutput, true);
+  assert.match(Buffer.concat(bridge.push(frame({
+    type: "response.output_text.delta", delta: "done",
+  }))).toString(), /done/);
 });
 
 test("only treats endpoint capability failures as unsupported Chat", () => {

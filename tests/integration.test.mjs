@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import net from "node:net";
+import { once } from "node:events";
 
 let gateway;
 let mock;
@@ -57,10 +58,26 @@ before(async () => {
   });
 });
 
-after(() => {
-  gateway?.kill("SIGTERM");
-  mock?.kill("SIGTERM");
-  rmSync(dataDir, { recursive: true, force: true });
+after(async () => {
+  const processes = [gateway, mock].filter(Boolean);
+  for (const child of processes) child.kill("SIGTERM");
+  await Promise.all(processes.map(async (child) => {
+    if (child.exitCode != null) return;
+    await Promise.race([
+      once(child, "exit"),
+      new Promise((resolve) => setTimeout(resolve, 1500)),
+    ]);
+    if (child.exitCode == null) child.kill("SIGKILL");
+  }));
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      rmSync(dataDir, { recursive: true, force: true });
+      break;
+    } catch (error) {
+      if (error?.code !== "EPERM" || attempt === 7) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
 });
 
 test("records immediately, fails over, streams unchanged, and captures usage", async () => {
@@ -934,7 +951,7 @@ test("keeps managed upstream tools out of request racing", async () => {
   const completed = (await get("/api/requests?limit=10"))[0];
   const detail = await get(`/api/requests/${completed.id}`);
   assert.equal(detail.status, "completed");
-  assert.equal(detail.attempt_count, 2);
+  assert.equal(detail.attempt_count, 1);
   assert.equal(detail.first_token_timeout_ms, 50);
   assert.equal(detail.race_triggered, 0);
   assert.equal(detail.race_winner_sequence, null);

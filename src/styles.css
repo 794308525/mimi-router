@@ -1163,3 +1163,8 @@ input:disabled, select:disabled { background: #edf0f1; }
   .notice { left: 12px; right: 12px; top: 65px; max-width: none; }
   .app-update-banner { width: calc(100% - 24px); margin-top: 12px; margin-bottom: -10px; }
 }
+.attempt-result { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; }
+.attempt-result > span { color: var(--faint); font-size: 11px; margin-top: 2px; }
+.attempt-error-details { max-width: 100%; margin-top: 3px; color: var(--danger-dark); font-size: 11px; }
+.attempt-error-details summary { cursor: pointer; color: var(--danger); }
+.attempt-error-details p { max-width: 280px; margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }

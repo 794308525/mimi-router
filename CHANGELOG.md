@@ -2,6 +2,82 @@
 
 This project follows semantic versioning. Every feature update must keep the application version and both language variants of the release notes in sync.
 
+## 0.2.80 - 2026-09-13
+
+- Fixed native Responses streams that completed without text, refusal, or tool calls returning an empty result; they are now consistently recorded as empty_content.
+
+## 0.2.79 - 2026-09-13
+
+- Preserved logprobs and top_logprobs from Trae Chat requests for Responses providers that support probability outputs.
+
+## 0.2.78 - 2026-09-13
+
+- Fixed request-detail error expansion bubbling into the parent row click handler, making upstream error diagnosis more reliable.
+
+## 0.2.77 - 2026-09-13
+
+- Accepted Responses message output items whose content is returned directly as a string, preventing valid replies from being misclassified as empty content.
+
+## 0.2.76 - 2026-09-13
+
+- Normalized Trae tool-call arguments consistently, accepting strings, objects, and omitted arguments to prevent provider-side format errors, empty content, and 502 responses.
+
+## 0.2.75 - 2026-09-13
+
+- Accepted object-shaped function arguments from Trae/Chat providers and normalized them to valid JSON so tool-call content is not corrupted.
+
+## 0.2.74 - 2026-09-13
+
+- Detected empty content in successful Responses events and now records and retries it as empty_content instead of returning a blank reply to Trae.
+
+## 0.2.73 - 2026-09-13
+
+- Accepted additional non-standard Responses provider outputs, including string output values, so Trae does not misclassify valid replies as empty content.
+
+## 0.2.72 - 2026-09-13
+
+- Accepted providers that return Chat-shaped completion objects from a Responses endpoint, extracting text and function tool calls to prevent empty content in Trae.
+
+## 0.2.71 - 2026-09-12
+
+- Accepted additional Responses provider text content parts so valid text is not misclassified as empty content.
+
+## 0.2.70 - 2026-09-12
+
+- Accepted upstream providers that return a normal JSON Responses completion even when stream=true, preventing Trae from seeing false empty-content or 502 errors.
+
+## 0.2.69 - 2026-09-12
+
+- Expanded Trae multimodal Chat compatibility with input_text, input_image, input_audio, and common audio content parts.
+
+## 0.2.68 - 2026-09-12
+
+- Expanded Chat compatibility by accepting common legacy Trae functions, function_call, stop, and sampling parameters instead of rejecting requests that cannot be mapped one-to-one.
+
+## 0.2.66 - 2026-09-12
+
+- Improved upstream error parsing to support common error string, detail, and error_description formats, making real provider failures easier to diagnose for Trae.
+
+## 0.2.65 - 2026-09-12
+
+- Fixed managed-tool requests being misclassified by first-token racing while retaining the configured diagnostic threshold.
+
+## 0.2.64 - 2026-09-12
+
+- Fixed Responses requests containing managed tools being mishandled by first-token racing, preventing duplicate upstream requests and 502 failures for Trae.
+
+## 0.2.63 - 2026-09-12
+
+- Added expandable upstream-attempt error details in request history to diagnose empty content, 502 responses, and model-provider compatibility failures.
+
+## 0.2.62 - 2026-09-12
+
+- Improved Chat/Responses compatibility by accepting upstream responses that only return output_text and treating managed-tool work states as valid progress, reducing false empty-content and timeout failures for Trae requests.
+
+## 0.2.61 - 2026-09-08
+
+- Added GPT-6 Astra billing at OpenAI Standard prices and recalculated historical request and upstream-attempt costs.
+
 ## 0.2.60 - 2026-09-05
 
 - Recalculated historical records after official pricing changes while retaining the 415 compatibility path.
@@ -309,3 +385,61 @@ This project follows semantic versioning. Every feature update must keep the app
 - Added provider management, drag sorting, benchmarking, automatic retries, failover, and circuit recovery.
 - Added request history, token and cost statistics, time to first token, and stage-level latency analysis.
 - Added Codex configuration takeover and desktop packaging for macOS and Windows.
+
+
+
+
+
+
+
+## 0.2.80 - 2026-09-13
+
+- Fixed native Responses streams that completed without text, refusal, or tool calls returning an empty result; they are now consistently recorded as empty_content.
+
+## 0.2.79 - 2026-09-13
+
+- Preserved logprobs and top_logprobs from Trae Chat requests for Responses providers that support probability outputs.
+
+## 0.2.78 - 2026-09-13
+
+- Fixed request-detail error expansion bubbling into the parent row click handler, making upstream error diagnosis more reliable.
+
+## 0.2.77 - 2026-09-13
+
+- Accepted Responses message output items whose content is returned directly as a string, preventing valid replies from being misclassified as empty content.
+
+## 0.2.76 - 2026-09-13
+
+- Normalized Trae tool-call arguments consistently, accepting strings, objects, and omitted arguments to prevent provider-side format errors, empty content, and 502 responses.
+
+## 0.2.75 - 2026-09-13
+
+- Accepted object-shaped function arguments from Trae/Chat providers and normalized them to valid JSON so tool-call content is not corrupted.
+
+## 0.2.74 - 2026-09-13
+
+- Detected empty content in successful Responses events and now records and retries it as empty_content instead of returning a blank reply to Trae.
+
+## 0.2.73 - 2026-09-13
+
+- Accepted additional non-standard Responses provider outputs, including string output values, so Trae does not misclassify valid replies as empty content.
+
+## 0.2.72 - 2026-09-13
+
+- Accepted providers that return Chat-shaped completion objects from a Responses endpoint, extracting text and function tool calls to prevent empty content in Trae.
+
+## 0.2.71 - 2026-09-12
+
+- Accepted additional Responses provider text content parts so valid text is not misclassified as empty content.
+
+## 0.2.70 - 2026-09-12
+
+- Accepted upstream providers that return a normal JSON Responses completion even when stream=true, preventing Trae from seeing false empty-content or 502 errors.
+
+## 0.2.69 - 2026-09-12
+
+- Expanded Trae multimodal Chat compatibility with input_text, input_image, input_audio, and common audio content parts.
+
+## 0.2.68 - 2026-09-12
+
+- Added a gateway-internal retry for Trae when failover is disabled, preventing a single upstream first-token timeout from immediately surfacing as a 504.

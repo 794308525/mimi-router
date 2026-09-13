@@ -81,7 +81,7 @@ test("compacts detailed diagnostics after three days without deleting request su
 test("runs compatibility data migrations only once", () => {
   const migrationDirectory = mkdtempSync(join(tmpdir(), "codex-router-migration-test-"));
   const first = createDatabase(migrationDirectory);
-  assert.equal(first.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 8);
+  assert.equal(first.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 9);
   const provider = saveProvider(first, {
     name: "Migration upstream",
     base_url: "http://127.0.0.1:19996/v1",
@@ -163,7 +163,7 @@ test("runs compatibility data migrations only once", () => {
 
   const reopened = createDatabase(migrationDirectory);
   assert.equal(reopened.prepare("SELECT status FROM requests WHERE id = 'post-migration'").get().status, "cancelled");
-  assert.equal(reopened.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 8);
+  assert.equal(reopened.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 9);
   reopened.close();
   rmSync(migrationDirectory, { recursive: true, force: true });
 });

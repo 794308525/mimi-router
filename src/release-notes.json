@@ -1,12 +1,256 @@
 {
-  "currentVersion": "0.2.60",
+  "currentVersion": "0.2.80",
   "releases": [
+    {
+      "version": "0.2.80",
+      "date": "2026-09-13",
+      "notes": {
+        "zh-CN": [
+          "修复原生 Responses 流在 response.completed 但没有文本、拒答或工具调用时仍返回空结果的问题，统一记录为 empty_content。"
+        ],
+        "en": [
+          "Fixed native Responses streams that completed without text, refusal, or tool calls returning an empty result; they are now consistently recorded as empty_content."
+        ]
+      }
+    },
+    {
+      "version": "0.2.79",
+      "date": "2026-09-13",
+      "notes": {
+        "zh-CN": [
+          "保留 Trae Chat 请求中的 logprobs 和 top_logprobs 参数，兼容支持概率输出的 Responses 服务商。"
+        ],
+        "en": [
+          "Preserved logprobs and top_logprobs from Trae Chat requests for Responses providers that support probability outputs."
+        ]
+      }
+    },
+    {
+      "version": "0.2.78",
+      "date": "2026-09-13",
+      "notes": {
+        "zh-CN": [
+          "修复请求详情中展开上游错误信息时意外触发父级行点击的问题，错误排查操作更加稳定。"
+        ],
+        "en": [
+          "Fixed request-detail error expansion bubbling into the parent row click handler, making upstream error diagnosis more reliable."
+        ]
+      }
+    },
+    {
+      "version": "0.2.77",
+      "date": "2026-09-13",
+      "notes": {
+        "zh-CN": [
+          "兼容服务商在 Responses message output 中直接返回字符串 content 的格式，避免有效回复被误判为空内容。"
+        ],
+        "en": [
+          "Accepted Responses message output items whose content is returned directly as a string, preventing valid replies from being misclassified as empty content."
+        ]
+      }
+    },
+    {
+      "version": "0.2.76",
+      "date": "2026-09-13",
+      "notes": {
+        "zh-CN": [
+          "统一规范化 Trae 工具调用参数，兼容字符串、对象和缺失参数，避免模型服务商因参数格式异常返回空内容或 502。"
+        ],
+        "en": [
+          "Normalized Trae tool-call arguments consistently, accepting strings, objects, and omitted arguments to prevent provider-side format errors, empty content, and 502 responses."
+        ]
+      }
+    },
+    {
+      "version": "0.2.75",
+      "date": "2026-09-13",
+      "notes": {
+        "zh-CN": [
+          "兼容 Trae/Chat 服务商返回对象形式的函数参数，统一序列化为合法 JSON，避免工具调用内容损坏。"
+        ],
+        "en": [
+          "Accepted object-shaped function arguments from Trae/Chat providers and normalized them to valid JSON so tool-call content is not corrupted."
+        ]
+      }
+    },
+    {
+      "version": "0.2.74",
+      "date": "2026-09-13",
+      "notes": {
+        "zh-CN": [
+          "识别 Responses 成功事件中的空内容并以 empty_content 记录和重试，避免将空回复直接返回给 Trae。"
+        ],
+        "en": [
+          "Detected empty content in successful Responses events and now records and retries it as empty_content instead of returning a blank reply to Trae."
+        ]
+      }
+    },
+    {
+      "version": "0.2.73",
+      "date": "2026-09-13",
+      "notes": {
+        "zh-CN": [
+          "兼容更多非标准 Responses 上游返回，包括字符串形式的 output，避免 Trae 将有效回复识别为空内容。"
+        ],
+        "en": [
+          "Accepted additional non-standard Responses provider outputs, including string output values, so Trae does not misclassify valid replies as empty content."
+        ]
+      }
+    },
+    {
+      "version": "0.2.72",
+      "date": "2026-09-13",
+      "notes": {
+        "zh-CN": [
+          "兼容 Responses 地址返回 Chat 结构完成结果的服务商，自动提取文本和函数工具调用，避免 Trae 收到空内容。"
+        ],
+        "en": [
+          "Accepted providers that return Chat-shaped completion objects from a Responses endpoint, extracting text and function tool calls to prevent empty content in Trae."
+        ]
+      }
+    },
+    {
+      "version": "0.2.71",
+      "date": "2026-09-12",
+      "notes": {
+        "zh-CN": [
+          "兼容更多 Responses 服务商返回的 text 内容片段，避免有效文本被识别为空内容。"
+        ],
+        "en": [
+          "Accepted additional Responses provider text content parts so valid text is not misclassified as empty content."
+        ]
+      }
+    },
+    {
+      "version": "0.2.70",
+      "date": "2026-09-12",
+      "notes": {
+        "zh-CN": [
+          "兼容上游在 stream=true 时返回普通 JSON Responses 完成结果的实现，避免 Trae 因非 SSE 响应被误报为空内容或 502。"
+        ],
+        "en": [
+          "Accepted upstream providers that return a normal JSON Responses completion even when stream=true, preventing Trae from seeing false empty-content or 502 errors."
+        ]
+      }
+    },
+    {
+      "version": "0.2.69",
+      "date": "2026-09-12",
+      "notes": {
+        "zh-CN": [
+          "扩展 Trae 多模态 Chat 兼容，支持 input_text、input_image、input_audio 及常见 audio 内容片段。"
+        ],
+        "en": [
+          "Expanded Trae multimodal Chat compatibility with input_text, input_image, input_audio, and common audio content parts."
+        ]
+      }
+    },
+    {
+      "version": "0.2.68",
+      "date": "2026-09-12",
+      "notes": {
+        "zh-CN": [
+          "针对 Trae 客户端在关闭故障转移时保留一次网关内重试，避免一次上游首字超时直接返回 504。"
+        ],
+        "en": [
+          "Added a gateway-internal retry for Trae when failover is disabled, preventing a single upstream first-token timeout from immediately surfacing as a 504."
+        ]
+      }
+    },
+    {
+      "version": "0.2.68",
+      "date": "2026-09-12",
+      "notes": {
+        "zh-CN": [
+          "扩展 Chat 兼容能力，接收 Trae 常见的旧版 functions、function_call、stop 和采样参数，不再因无法一一映射而直接拒绝请求。"
+        ],
+        "en": [
+          "Expanded Chat compatibility by accepting common legacy Trae functions, function_call, stop, and sampling parameters instead of rejecting requests that cannot be mapped one-to-one."
+        ]
+      }
+    },
+    {
+      "version": "0.2.66",
+      "date": "2026-09-12",
+      "notes": {
+        "zh-CN": [
+          "改进上游错误解析，兼容 error 为字符串、detail 和 error_description 等常见格式，便于 Trae 排查真实模型服务商错误。"
+        ],
+        "en": [
+          "Improved upstream error parsing to support common error string, detail, and error_description formats, making real provider failures easier to diagnose for Trae."
+        ]
+      }
+    },
+    {
+      "version": "0.2.65",
+      "date": "2026-09-12",
+      "notes": {
+        "zh-CN": [
+          "修复包含托管工具的请求被首字超时竞速误判的问题，同时保留诊断阈值记录。"
+        ],
+        "en": [
+          "Fixed managed-tool requests being misclassified by first-token racing while retaining the configured diagnostic threshold."
+        ]
+      }
+    },
+    {
+      "version": "0.2.64",
+      "date": "2026-09-12",
+      "notes": {
+        "zh-CN": [
+          "修复包含托管工具的 Responses 请求被首字超时竞速机制误处理的问题，避免 Trae 请求重复上游或返回 502。"
+        ],
+        "en": [
+          "Fixed Responses requests containing managed tools being mishandled by first-token racing, preventing duplicate upstream requests and 502 failures for Trae."
+        ]
+      }
+    },
+    {
+      "version": "0.2.63",
+      "date": "2026-09-12",
+      "notes": {
+        "zh-CN": [
+          "请求详情的每次上游尝试新增可展开错误信息，便于排查模型服务商返回的空内容、502 和兼容性错误。"
+        ],
+        "en": [
+          "Added expandable upstream-attempt error details in request history to diagnose empty content, 502 responses, and model-provider compatibility failures."
+        ]
+      }
+    },
+    {
+      "version": "0.2.62",
+      "date": "2026-09-12",
+      "notes": {
+        "zh-CN": [
+          "增强 Chat/Responses 兼容性：兼容仅返回 output_text 的上游，并将托管工具工作状态识别为有效进度，减少 Trae 请求误报空内容和超时。"
+        ],
+        "en": [
+          "Improved Chat/Responses compatibility by accepting upstream responses that only return output_text and treating managed-tool work states as valid progress, reducing false empty-content and timeout failures for Trae requests."
+        ]
+      }
+    },
+    {
+      "version": "0.2.61",
+      "date": "2026-09-08",
+      "notes": {
+        "zh-CN": [
+          "按 OpenAI 官方 Standard 价格加入 GPT-6 Astra 计费，并重算请求与上游尝试的历史费用。"
+        ],
+        "en": [
+          "Added GPT-6 Astra billing at OpenAI Standard prices and recalculated historical request and upstream-attempt costs."
+        ]
+      }
+    },
     {
       "version": "0.2.60",
       "date": "2026-09-05",
       "notes": {
-        "zh-CN": ["扩展官方定价变更后的历史记录重算，并保留 415 兼容链路。"],
-        "en": ["Recalculated historical records after official pricing changes while retaining the 415 compatibility path."]
+        "zh-CN": [
+          "扩展官方定价变更后的历史记录重算，并保留 415 兼容链路。"
+        ],
+        "en": [
+          "Recalculated historical records after official pricing changes while retaining the 415 compatibility path."
+        ]
       }
     },
     {
