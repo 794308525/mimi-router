@@ -4,6 +4,7 @@ artifacts/
 release-output/
 release-assets/
 data/
+work/
 src-tauri/runtime/
 src-tauri/target/
 .desktop-runtime/
