@@ -37,6 +37,7 @@ export function codexStatus(port, { apiAuthEnabled = false, apiKey = "" } = {}) 
       snippet: codexSnippet(port, { apiAuthEnabled }),
       config_kind: "new",
       active_provider: null,
+      model: DEFAULT_MODEL,
       preserve_available: false,
       recommended_mode: "initialize",
       api_auth_enabled: apiAuthEnabled,
@@ -55,6 +56,7 @@ export function codexStatus(port, { apiAuthEnabled = false, apiKey = "" } = {}) 
       : codexSnippet(port, { apiAuthEnabled }),
     config_kind: inspection.configKind,
     active_provider: inspection.activeProvider,
+    model: inspection.model || DEFAULT_MODEL,
     preserve_available: inspection.preserveAvailable,
     recommended_mode: inspection.recommendedMode,
     api_auth_enabled: apiAuthEnabled,
@@ -98,6 +100,22 @@ export function applyCodexConfig(port, {
   };
 }
 
+export function setCodexModel(port, model, { apiAuthEnabled = false, apiKey = "" } = {}) {
+  const normalized = String(model || "").trim();
+  if (!normalized) throw new Error("模型名称不能为空");
+  const path = codexConfigPath();
+  if (!existsSync(path)) throw new Error("尚未找到 Codex 配置，请先完成 Codex 接入");
+  const original = readFileSync(path, "utf8");
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backup = `${path}.codex-router-${stamp}.bak`;
+  copyFileSync(path, backup);
+  const next = upsertTopLevel(original, "model", tomlString(normalized));
+  const temporary = join(dirname(path), `.${basename(path)}.${process.pid}.tmp`);
+  writeFileSync(temporary, next, { mode: 0o600 });
+  renameSync(temporary, path);
+  return { ...codexStatus(port, { apiAuthEnabled, apiKey }), backup, model: normalized };
+}
+
 function inspectCodexConfig(content, expected, { apiAuthEnabled = false, apiKey = "" } = {}) {
   if (!content.trim()) {
     return {
@@ -133,6 +151,7 @@ function inspectCodexConfig(content, expected, { apiAuthEnabled = false, apiKey 
     recommendedMode: preserveAvailable ? "preserve" : "initialize",
     connected: sameBaseUrl(providerBaseUrl, expected)
       && (!apiAuthEnabled || (Boolean(apiKey) && providerToken === apiKey)),
+    model: readTopLevelString(content, "model") || DEFAULT_MODEL,
   };
 }
 

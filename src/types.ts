@@ -20,6 +20,7 @@ export type Provider = {
   base_url: string;
   default_model: string;
   test_model: string;
+  available_models: string[];
   cost_multiplier: number;
   has_secret: boolean;
   headers_json: string;
@@ -382,6 +383,7 @@ export type CodexStatus = {
   snippet: string;
   config_kind: CodexConfigKind;
   active_provider: string | null;
+  model: string;
   preserve_available: boolean;
   recommended_mode: CodexApplyMode;
   api_auth_enabled: boolean;

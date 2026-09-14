@@ -17,6 +17,11 @@ const server = createServer((req, res) => {
     res.end(JSON.stringify({ chat_requests: Object.fromEntries(chatRequestCounts) }));
     return;
   }
+  if (req.method === "GET" && req.url?.endsWith("/models")) {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ data: [{ id: "deepseek-chat", object: "model" }, { id: "deepseek-reasoner", object: "model" }] }));
+    return;
+  }
   if (req.method === "GET" && req.url === "/__last-responses") {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(lastResponsesRequest));
@@ -29,6 +34,11 @@ const server = createServer((req, res) => {
   const chunks = [];
   req.on("data", (chunk) => chunks.push(chunk));
   req.on("end", () => {
+    if (req.url?.includes("/media-rejected/")) {
+      res.writeHead(415, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "JSON rejected by upstream" } }));
+      return;
+    }
     if (chat) {
       chatRequestCounts.set(req.url, (chatRequestCounts.get(req.url) ?? 0) + 1);
       if (req.url?.includes("/chat-unsupported/")) {
@@ -472,7 +482,12 @@ const server = createServer((req, res) => {
             type: "response.output_text.delta",
             delta: "OK",
           })}\n\n`);
-          setTimeout(() => res.end(`event: response.completed\ndata: ${JSON.stringify({
+          setTimeout(() => {
+            if (req.url?.includes("/missing-completed/")) {
+              res.end();
+              return;
+            }
+            res.end(`event: response.completed\ndata: ${JSON.stringify({
             type: "response.completed",
             response: {
               id: "resp_mock",
@@ -484,7 +499,8 @@ const server = createServer((req, res) => {
                 output_tokens_details: { reasoning_tokens: 1 },
               },
             },
-          })}\n\n`), 20);
+          })}\n\n`);
+          }, 20);
         }, firstOutputDelay);
       } else {
         res.writeHead(200, { "content-type": "application/json" });

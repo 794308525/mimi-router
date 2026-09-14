@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { DEFAULT_MODEL, DEFAULT_TEST_MODEL } from "./constants.mjs";
-import { OFFICIAL_PRICING, OFFICIAL_PRICING_URL, calculateOfficialCost } from "./pricing.mjs";
+import { OFFICIAL_PRICING, OFFICIAL_PRICING_URL, calculateOfficialCost, resolveOfficialPricing } from "./pricing.mjs";
 
 const now = () => new Date().toISOString();
 
@@ -244,6 +244,7 @@ export function createDatabase(dataDir) {
   `);
 
   ensureColumn(db, "providers", "test_model", "TEXT NOT NULL DEFAULT 'gpt-5.6-terra'");
+  ensureColumn(db, "providers", "available_models_json", "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(db, "providers", "cost_multiplier", "REAL NOT NULL DEFAULT 1");
   ensureColumn(db, "route_groups", "provider_retry_attempts", "INTEGER NOT NULL DEFAULT 2");
   ensureColumn(db, "providers", "consecutive_slow_first_tokens", "INTEGER NOT NULL DEFAULT 0");
@@ -645,7 +646,7 @@ export function resolveModelPricing(db, model) {
     WHERE active = 1 AND (lower(model) = lower(?) OR lower(?) LIKE lower(model) || '-%')
     ORDER BY CASE WHEN lower(model) = lower(?) THEN 0 ELSE 1 END, length(model) DESC
     LIMIT 1
-  `).get(normalized, normalized, normalized) ?? null;
+  `).get(normalized, normalized, normalized) ?? resolveOfficialPricing(normalized);
 }
 
 export function saveOfficialPricing(db, update) {
@@ -743,8 +744,16 @@ function seed(db) {
 
 export function publicProvider(row) {
   if (!row) return null;
+  let availableModels = [];
+  try {
+    const value = JSON.parse(row.available_models_json || "[]");
+    if (Array.isArray(value)) availableModels = value.filter((model) => typeof model === "string" && model.trim());
+  } catch {
+    availableModels = [];
+  }
   return {
     ...row,
+    available_models: availableModels,
     has_secret: Boolean(row.has_secret),
     enabled: Boolean(row.enabled),
   };
@@ -896,6 +905,11 @@ export function saveProvider(db, input, id = randomUUID()) {
     base_url: String(input.base_url ?? existing?.base_url ?? "").trim().replace(/\/+$/, ""),
     default_model: String(input.default_model ?? existing?.default_model ?? DEFAULT_MODEL).trim(),
     test_model: String(input.test_model ?? existing?.test_model ?? DEFAULT_TEST_MODEL).trim(),
+    available_models_json: JSON.stringify(Array.isArray(input.available_models)
+      ? [...new Set(input.available_models.map((model) => String(model).trim()).filter(Boolean))]
+      : (() => {
+        try { return JSON.parse(existing?.available_models_json || "[]"); } catch { return []; }
+      })()),
     cost_multiplier: nonNegativeNumber(input.cost_multiplier, existing?.cost_multiplier ?? 1),
     has_secret: input.has_secret ?? existing?.has_secret ?? false,
     headers_json: JSON.stringify(input.headers ?? safeJson(existing?.headers_json, {})),
@@ -918,15 +932,16 @@ export function saveProvider(db, input, id = randomUUID()) {
 
   db.prepare(`
     INSERT INTO providers (
-      id, name, base_url, default_model, test_model, cost_multiplier, has_secret, headers_json,
+      id, name, base_url, default_model, test_model, available_models_json, cost_multiplier, has_secret, headers_json,
       connect_timeout_ms, request_timeout_ms, stream_idle_timeout_ms, stream_progress_timeout_ms,
       max_concurrency, enabled, failure_threshold, cooldown_ms, chat_support_mode, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       base_url = excluded.base_url,
       default_model = excluded.default_model,
       test_model = excluded.test_model,
+      available_models_json = excluded.available_models_json,
       cost_multiplier = excluded.cost_multiplier,
       has_secret = excluded.has_secret,
       headers_json = excluded.headers_json,
@@ -946,6 +961,7 @@ export function saveProvider(db, input, id = randomUUID()) {
     values.base_url,
     values.default_model,
     values.test_model,
+    values.available_models_json,
     values.cost_multiplier,
     values.has_secret ? 1 : 0,
     values.headers_json,
@@ -1148,6 +1164,45 @@ export function saveRouteRule(db, input, id = randomUUID()) {
     timestamp,
   );
   return listRoutes(db).rules.find((rule) => rule.id === id);
+}
+
+export function ensureProviderModelRoutes(db, providerId, models) {
+  const provider = getProvider(db, providerId);
+  const normalized = [...new Set((Array.isArray(models) ? models : [])
+    .map((model) => String(model).trim()).filter(Boolean))];
+  if (!provider || normalized.length === 0) return listRoutes(db);
+
+  const groupName = `自动模型路由：${provider.name}`;
+  const existingGroup = db.prepare("SELECT id FROM route_groups WHERE name = ?").get(groupName);
+  const group = existingGroup
+    ? saveRouteGroup(db, {
+      members: [{ provider_id: provider.id, priority: 1, weight: 100, enabled: true }],
+    }, existingGroup.id)
+    : saveRouteGroup(db, {
+      name: groupName,
+      strategy: "fixed",
+      failover_enabled: false,
+      sticky_enabled: true,
+      max_attempts: 1,
+      members: [{ provider_id: provider.id, priority: 1, weight: 100, enabled: true }],
+    });
+
+  const defaultSort = db.prepare("SELECT MIN(sort_order) AS value FROM route_rules WHERE match_type = 'default'").get()?.value ?? 1000;
+  let nextSort = Number(defaultSort) - 1;
+  for (const model of normalized) {
+    const current = db.prepare("SELECT * FROM route_rules WHERE match_type = 'exact' AND model_pattern = ? ORDER BY sort_order ASC LIMIT 1").get(model);
+    if (current && current.route_group_id !== group.id) continue;
+    saveRouteRule(db, {
+      name: `自动：${provider.name} · ${model}`,
+      sort_order: current?.sort_order ?? nextSort,
+      match_type: "exact",
+      model_pattern: model,
+      route_group_id: group.id,
+      enabled: true,
+    }, current?.id);
+    nextSort -= 1;
+  }
+  return listRoutes(db);
 }
 
 export function listRequests(db, limit = 100) {

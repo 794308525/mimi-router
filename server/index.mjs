@@ -16,6 +16,7 @@ import {
   listRequestPage,
   listRequests,
   listRoutes,
+  ensureProviderModelRoutes,
   pruneExpiredDiagnostics,
   pruneExpiredRequests,
   saveProvider,
@@ -25,9 +26,10 @@ import {
   saveRouteRule,
 } from "./db.mjs";
 import { addEventClient, heartbeat, publish } from "./events.mjs";
-import { applyCodexConfig, codexStatus } from "./codex-config.mjs";
+import { applyCodexConfig, codexStatus, setCodexModel } from "./codex-config.mjs";
 import { deleteSecret, getSecret, secretBackend, setSecret } from "./secrets.mjs";
 import { RouterEngine, testProvider } from "./router.mjs";
+import { repairAstraCosts } from "./repair-astra-costs.mjs";
 import { fetchOfficialPricing } from "./pricing.mjs";
 import { BenchmarkService } from "./benchmark.mjs";
 import { getCodexModelCatalog } from "./codex-models.mjs";
@@ -45,6 +47,7 @@ const db = createDatabase(dataDir);
 let routerAuthEnabled = getRouterSettings(db).api_auth_enabled;
 let routerApiKey = loadOrCreateRouterApiKey();
 const engine = new RouterEngine(db, dataDir, publish);
+repairAstraCosts(db, engine);
 engine.startCircuitRecovery();
 const benchmarks = new BenchmarkService(db, dataDir, publish);
 let pricingSyncPromise = null;
@@ -184,13 +187,35 @@ async function handleApi(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/providers") {
     return json(res, 200, listProviders(db));
   }
+  if (req.method === "POST" && url.pathname === "/api/provider-models") {
+    const input = await bodyJson(req);
+    try {
+      return json(res, 200, { models: await fetchProviderModels(input) });
+    } catch (error) { return json(res, 422, { error: `获取模型列表失败：${error instanceof Error ? error.message : "网络错误"}` }); }
+  }
+  const providerModelsMatch = url.pathname.match(/^\/api\/providers\/([^/]+)\/models$/);
+  if (providerModelsMatch && req.method === "POST") {
+    const provider = getProvider(db, providerModelsMatch[1]);
+    if (!provider) return json(res, 404, { error: "中转不存在" });
+    try {
+      const models = await fetchProviderModels({ base_url: provider.base_url, api_key: getSecret(dataDir, provider.id), headers_text: provider.headers_json });
+      const mergedModels = [...new Set([...(provider.available_models ?? []), ...models])];
+      const updated = saveProvider(db, { available_models: mergedModels }, provider.id);
+      const routes = ensureProviderModelRoutes(db, provider.id, mergedModels);
+      publish("provider.changed", { provider: updated });
+      publish("routes.changed", { routes });
+      return json(res, 200, { models: mergedModels, fetched_models: models, provider: updated, routes });
+    } catch (error) { return json(res, 422, { error: `获取模型列表失败：${error instanceof Error ? error.message : "网络错误"}` }); }
+  }
   if (req.method === "POST" && url.pathname === "/api/providers") {
     const input = await bodyJson(req);
     let provider = saveProvider(db, { ...input, has_secret: Boolean(input.api_key) });
     if (input.api_key) setSecret(dataDir, provider.id, String(input.api_key));
     if (input.api_key) provider = saveProvider(db, { ...input, has_secret: true }, provider.id);
     addProviderToDefaultGroup(provider.id);
+    const routes = ensureProviderModelRoutes(db, provider.id, provider.available_models);
     publish("provider.changed", { provider });
+    publish("routes.changed", { routes });
     return json(res, 201, provider);
   }
 
@@ -219,8 +244,10 @@ async function handleApi(req, res, url) {
       { ...input, has_secret: input.api_key ? true : existing.has_secret },
       existing.id,
     );
+    const routes = input.available_models ? ensureProviderModelRoutes(db, existing.id, provider.available_models) : listRoutes(db);
     if (providerIdentityChanged) engine.clearConversationBlocks(existing.id);
     publish("provider.changed", { provider });
+    if (input.available_models) publish("routes.changed", { routes });
     return json(res, 200, provider);
   }
   if (providerMatch && req.method === "DELETE") {
@@ -356,6 +383,13 @@ async function handleApi(req, res, url) {
       apiKey: routerApiKey,
     }));
   }
+  if (req.method === "POST" && url.pathname === "/api/codex/model") {
+    const input = await bodyJson(req);
+    return json(res, 200, setCodexModel(port, input.model, {
+      apiAuthEnabled: routerAuthEnabled,
+      apiKey: routerApiKey,
+    }));
+  }
 
   return json(res, 404, { error: "API not found" });
 }
@@ -366,6 +400,22 @@ function managementRouterSettings() {
     ...settings,
     adaptive_first_token_preview: getAdaptiveFirstTokenTimeoutPreview(db, settings.first_token_timeout_ms),
   };
+}
+
+async function fetchProviderModels(input) {
+  const baseUrl = String(input.base_url || "").trim().replace(/\/+$/, "");
+  if (!baseUrl) throw new Error("Base URL 不能为空");
+  let headers = { accept: "application/json" };
+  try {
+    const extra = input.headers_text ? JSON.parse(String(input.headers_text)) : {};
+    if (extra && typeof extra === "object" && !Array.isArray(extra)) headers = { ...headers, ...extra };
+  } catch { throw new Error("自定义请求头不是有效 JSON"); }
+  if (input.api_key) headers.authorization = `Bearer ${String(input.api_key)}`;
+  const response = await fetch(`${baseUrl}/models`, { headers, signal: AbortSignal.timeout(15000) });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) throw new Error(`渠道返回 ${response.status}`);
+  const models = Array.isArray(payload?.data) ? payload.data.map((item) => item?.id).filter((id) => typeof id === "string" && id.trim()) : [];
+  return [...new Set(models)];
 }
 
 function addProviderToDefaultGroup(providerId) {

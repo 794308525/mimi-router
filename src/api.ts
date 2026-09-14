@@ -47,6 +47,9 @@ export const api = {
     { method: "POST" },
   ),
   providerSecret: (id: string) => request<{ api_key: string }>(`/api/providers/${id}/secret`),
+  fetchProviderModels: (body: { base_url: string; api_key?: string; headers_text?: string }) =>
+    request<{ models: string[] }>("/api/provider-models", { method: "POST", body: JSON.stringify(body) }),
+  fetchSavedProviderModels: (id: string) => request<{ models: string[]; provider: Provider }>(`/api/providers/${id}/models`, { method: "POST" }),
   resetCircuit: (id: string) => request<Provider>(`/api/providers/${id}/reset-circuit`, { method: "POST" }),
   startBenchmark: (body: { route_group_id: string; attempts: number; timeout_seconds: number }) =>
     request<BenchmarkRun>("/api/benchmarks", { method: "POST", body: JSON.stringify(body) }),
@@ -90,6 +93,10 @@ export const api = {
   applyCodex: (mode: CodexApplyMode) => request<CodexStatus>("/api/codex/apply", {
     method: "POST",
     body: JSON.stringify({ mode }),
+  }),
+  setCodexModel: (model: string) => request<CodexStatus>("/api/codex/model", {
+    method: "POST",
+    body: JSON.stringify({ model }),
   }),
   storage: () => request<StorageUsage>("/api/storage"),
   clearStorageCache: () => request<StorageUsage>("/api/storage/cache", { method: "POST" }),

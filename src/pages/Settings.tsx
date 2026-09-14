@@ -26,7 +26,6 @@ export function SettingsPage({
   }, []);
 
   const codexActions = getCodexActions(codex);
-
   const apply = async (mode: CodexApplyMode) => {
     const action = codexActions.find((item) => item.mode === mode);
     if (!action) return;

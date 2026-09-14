@@ -43,6 +43,9 @@ const temporaryArchive = `${archivePath}.download`;
 mkdirSync(cacheDir, { recursive: true });
 mkdirSync(runtimeDir, { recursive: true });
 
+if (existsSync(archivePath)) {
+  console.log(`[desktop] 使用本地缓存运行时 ${archiveName}`);
+} else {
 const checksumsResponse = await fetch(`${releaseRoot}/SHASUMS256.txt`);
 if (!checksumsResponse.ok) throw new Error(`Node 校验文件下载失败 (${checksumsResponse.status})`);
 const checksums = await checksumsResponse.text();
@@ -64,6 +67,7 @@ if (!existsSync(archivePath) || sha256(archivePath) !== expectedHash) {
     throw new Error(`Node ${nodeArch} 运行时校验失败`);
   }
   renameSync(temporaryArchive, archivePath);
+}
 }
 
 const extractDir = mkdtempSync(join(tmpdir(), "mimi-router-node-"));

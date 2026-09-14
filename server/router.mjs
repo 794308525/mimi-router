@@ -1411,7 +1411,24 @@ export class RouterEngine {
       }
       if (!candidate.terminalReached) parser.finish();
       if (candidate.semanticFailure && !candidate.firstOutputRecorded) throw candidate.semanticFailure;
-      if (!candidate.terminalReached) throw new Error("Responses SSE 流缺少结束事件");
+      if (!candidate.terminalReached) {
+        const completedPayload = {
+          type: "response.completed",
+          response: {
+            id: candidate.responseId || `resp_${requestId}`,
+            object: "response",
+            status: "completed",
+            model: candidate.actualUpstreamModel || upstreamModel,
+            ...(Object.keys(candidate.usage || {}).length > 0 ? { usage: candidate.usage } : {}),
+          },
+        };
+        const completedSse = Buffer.from(`event: response.completed\ndata: ${JSON.stringify(completedPayload)}\n\n`, "utf8");
+        if (!res.write(completedSse)) await onceDrain(res);
+        candidate.terminalReached = true;
+        candidate.lastStreamEvent = "response.completed";
+        this.noteStreamTerminal(requestId);
+        this.updateAttempt(candidate.attemptId, { stream_phase: "completed", last_stream_event: "response.completed" });
+      }
       res.end();
     } catch (error) {
       clearTimeout(requestTimer);
@@ -1694,7 +1711,26 @@ export class RouterEngine {
           throw new Error("Chat Completions SSE 流缺少 [DONE] 结束标记");
         }
         if (upstreamProtocol === "responses" && !terminalReached) {
-          throw new Error("Responses SSE 流缺少结束事件");
+          // Some OpenAI-compatible providers (notably DeepSeek) close the SSE
+          // stream without emitting the Responses terminal event. Complete the
+          // client-side Responses stream so a valid generated answer is not
+          // reported as a transport failure.
+          const completedPayload = {
+            type: "response.completed",
+            response: {
+              id: responseId || `resp_${requestId}`,
+              object: "response",
+              status: "completed",
+              model: actualUpstreamModel || upstreamModel,
+              ...(Object.keys(usage).length > 0 ? { usage } : {}),
+            },
+          };
+          const completedSse = Buffer.from(`event: response.completed\ndata: ${JSON.stringify(completedPayload)}\n\n`, "utf8");
+          if (!res.write(completedSse)) await onceDrain(res);
+          terminalReached = true;
+          terminalEvent = "response.completed";
+          this.noteStreamTerminal(requestId);
+          this.updateAttempt(attemptId, { stream_phase: "completed", last_stream_event: terminalEvent });
         }
         if (!firstOutputRecorded) markFirstOutput();
         res.end();
@@ -2157,9 +2193,24 @@ export class RouterEngine {
   resolveRoute(model) {
     const { rules, groups } = listRoutes(this.db);
     const rule = rules.find((candidate) => candidate.enabled && ruleMatches(candidate, model));
-    if (!rule) return null;
-    const group = groups.find((candidate) => candidate.id === rule.route_group_id && candidate.enabled);
-    return group ? { rule, group } : null;
+    const group = rule && groups.find((candidate) => candidate.id === rule.route_group_id && candidate.enabled);
+    if (group && this.hasSelectableProvider(group)) return { rule, group };
+
+    // A model-specific route is a preference. If its provider is disabled,
+    // use the default route so unrelated providers remain usable.
+    const fallbackRule = rules.find((candidate) => candidate.enabled && candidate.match_type === "default");
+    const fallbackGroup = fallbackRule && groups.find((candidate) => candidate.id === fallbackRule.route_group_id && candidate.enabled);
+    return fallbackGroup && this.hasSelectableProvider(fallbackGroup)
+      ? { rule: fallbackRule, group: fallbackGroup }
+      : (group ? { rule, group } : null);
+  }
+
+  hasSelectableProvider(group) {
+    return group.members.some((member) => {
+      if (!member.enabled || !member.provider_enabled) return false;
+      const provider = getProvider(this.db, member.provider_id);
+      return provider && provider.enabled && provider.health_status !== "auth_error";
+    });
   }
 
   selectProvider(route, body, attempted, options = {}) {
@@ -2401,6 +2452,7 @@ export class RouterEngine {
   recordFailure(provider, category, explicitCooldownMs) {
     if (category === "conversation_blocked") return getProvider(this.db, provider.id);
     const current = getProvider(this.db, provider.id);
+    if (!current) return null;
     const failures = (current?.consecutive_failures ?? 0) + 1;
     const authError = category === "auth";
     const shouldOpen = authError || current?.circuit_state === "half_open" || failures >= current.failure_threshold;
@@ -3102,6 +3154,7 @@ function parseHeaders(value) {
 }
 
 function classifyStatus(status) {
+  if (status === 415) return { auth: false, retryable: true, category: "unsupported_media_type" };
   if (status === 401 || status === 403) return { auth: true, retryable: false, category: "auth" };
   if (status === 429) return { auth: false, retryable: true, category: "rate_limit" };
   if (SAME_PROVIDER_RETRY_HTTP_STATUSES.has(status)) {

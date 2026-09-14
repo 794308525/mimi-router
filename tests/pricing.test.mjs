@@ -2,6 +2,16 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { calculateOfficialCost, parseOfficialPricingPage, resolveOfficialPricing } from "../server/pricing.mjs";
 
+test("calculates Astra input, output and cache prices without double counting", () => {
+  const result = calculateOfficialCost({ model: "gpt-6-astra", inputTokens: 3000000, outputTokens: 1000000, cachedTokens: 1000000, cacheCreationTokens: 1000000 });
+  assert.equal(result.input_cost_usd, 20);
+  assert.equal(result.output_cost_usd, 75);
+  assert.equal(result.cached_input_cost_usd, 2);
+  assert.equal(result.cache_creation_cost_usd, 25);
+  assert.equal(result.total_cost_usd, 122);
+  assert.equal(result.long_context_pricing, true);
+});
+
 test("estimates gpt-5.6-sol usage with official token prices", () => {
   const result = calculateOfficialCost({
     model: "gpt-5.6-sol",

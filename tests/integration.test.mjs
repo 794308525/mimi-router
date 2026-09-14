@@ -128,6 +128,67 @@ test("records immediately, fails over, streams unchanged, and captures usage", a
   assert.ok(Number.isInteger(detail.attempts[1].upstream_wait_ms));
 });
 
+test("synthesizes response.completed when a DeepSeek-compatible SSE stream closes without it", async () => {
+  const provider = await post("/api/providers", {
+    name: "DeepSeek missing terminal event", base_url: `http://127.0.0.1:${mockPort}/missing-completed/v1`,
+    default_model: "deepseek-chat", test_model: "deepseek-chat",
+  });
+  const routes = await get("/api/routes");
+  const group = routes.groups[0];
+  try {
+    await put(`/api/route-groups/${group.id}`, {
+      ...group, failover_enabled: false, max_attempts: 1,
+      members: [{ provider_id: provider.id, priority: 1, weight: 100, enabled: true }],
+    });
+    const response = await fetch(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "deepseek-chat", input: "hello", stream: true }),
+    });
+    const stream = await response.text();
+    assert.equal(response.status, 200);
+    assert.match(stream, /response\.output_text\.delta/);
+    assert.match(stream, /response\.completed/);
+    const requestId = response.headers.get("x-codex-router-request-id");
+    const detail = await get(`/api/requests/${requestId}`);
+    assert.equal(detail.status, "completed");
+    assert.equal(detail.attempts[0].status, "completed");
+    assert.equal(detail.attempts[0].last_stream_event, "response.completed");
+  } finally {
+    await put(`/api/route-groups/${group.id}`, group);
+    await send("DELETE", `/api/providers/${provider.id}`, {});
+  }
+});
+
+test("fetches and persists provider models from its /v1/models endpoint", async () => {
+  const provider = await post("/api/providers", {
+    name: "Model catalog provider", base_url: `http://127.0.0.1:${mockPort}/models/v1`,
+    default_model: "deepseek-chat", test_model: "deepseek-chat",
+  });
+  try {
+    const response = await fetch(`http://127.0.0.1:${gatewayPort}/api/providers/${provider.id}/models`, { method: "POST" });
+    const result = await response.json();
+    assert.equal(response.status, 200);
+    assert.deepEqual(result.models, ["deepseek-chat", "deepseek-reasoner"]);
+    const saved = (await get("/api/providers")).find((item) => item.id === provider.id);
+    assert.deepEqual(saved.available_models, result.models);
+    const routes = await get("/api/routes");
+    const rule = routes.rules.find((item) => item.match_type === "exact" && item.model_pattern === "deepseek-chat");
+    const modelGroup = routes.groups.find((item) => item.id === rule?.route_group_id);
+    assert.equal(modelGroup?.members.length, 1);
+    assert.equal(modelGroup?.members[0].provider_id, provider.id);
+    const routed = await fetch(`http://127.0.0.1:${gatewayPort}/v1/responses`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "deepseek-chat", input: "route check", stream: true }),
+    });
+    assert.equal(routed.status, 200);
+    await routed.text();
+    const routedDetail = await get(`/api/requests/${routed.headers.get("x-codex-router-request-id")}`);
+    assert.equal(routedDetail.final_provider_id, provider.id);
+  } finally {
+    await send("DELETE", `/api/providers/${provider.id}`, {});
+  }
+});
+
 test("forces JSON content type upstream when client and provider headers disagree", async () => {
   const provider = await post("/api/providers", {
     name: "JSON content type enforcement",

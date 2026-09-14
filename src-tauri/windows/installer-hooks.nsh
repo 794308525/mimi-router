@@ -1,3 +1,11 @@
+!define MIMI_HOOK_DIR "${__FILEDIR__}"
 !macro NSIS_HOOK_PREINSTALL
-  nsExec::ExecToLog 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -Command "$$nodePath = [System.IO.Path]::GetFullPath(''$INSTDIR\runtime\node.exe''); Get-CimInstance Win32_Process | Where-Object { $$_.ExecutablePath -eq $$nodePath } | ForEach-Object { $$targetProcessId = $$_.ProcessId; Stop-Process -Id $$targetProcessId -Force -ErrorAction SilentlyContinue; Wait-Process -Id $$targetProcessId -Timeout 5 -ErrorAction SilentlyContinue }"'
+  InitPluginsDir
+  File /oname=$PLUGINSDIR\stop-mimi-runtime.ps1 "${MIMI_HOOK_DIR}\stop-mimi-runtime.ps1"
+  nsExec::ExecToLog 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\stop-mimi-runtime.ps1" -InstallDir "$INSTDIR"'
+  Pop $0
+  ${If} $0 != 0
+    MessageBox MB_OK|MB_ICONSTOP "Please close Mimi Router and retry installation. Its runtime is still in use." /SD IDOK
+    Abort
+  ${EndIf}
 !macroend

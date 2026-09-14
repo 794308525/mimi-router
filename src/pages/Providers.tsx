@@ -73,6 +73,8 @@ export function ProvidersPage({
   const [savingRoute, setSavingRoute] = useState(false);
   const [statsRange, setStatsRange] = useState<ProviderStatsRange>("today");
   const [providerNamesVisible, setProviderNamesVisible] = useState(readProviderNamesVisible);
+  const [remoteModels, setRemoteModels] = useState<string[]>([]);
+  const [loadingModels, setLoadingModels] = useState(false);
   const [draftOrder, setDraftOrder] = useState<string[]>([]);
   const [draggingProvider, setDraggingProvider] = useState<string | null>(null);
   const [dragOverProvider, setDragOverProvider] = useState<string | null>(null);
@@ -101,11 +103,11 @@ export function ProvidersPage({
     [stats.provider_periods, statsRange],
   );
   const testModels = useMemo(() => {
-    const models = [DEFAULT_TEST_MODEL, form.test_model, ...pricingModels.map((item) => item.model)]
+    const models = [DEFAULT_TEST_MODEL, form.test_model, ...remoteModels, ...pricingModels.map((item) => item.model)]
       .map((model) => model.trim())
       .filter(Boolean);
     return [...new Set(models)];
-  }, [form.test_model, pricingModels]);
+  }, [form.test_model, pricingModels, remoteModels]);
 
   useEffect(() => {
     if (!primaryGroup) return;
@@ -125,6 +127,7 @@ export function ProvidersPage({
     setForm(emptyForm);
     setShowApiKey(false);
     setEditing("new");
+    setRemoteModels([]);
   };
 
   const openEdit = (provider: Provider) => {
@@ -145,6 +148,20 @@ export function ProvidersPage({
     });
     setShowApiKey(false);
     setEditing(provider);
+    setRemoteModels(provider.available_models ?? []);
+  };
+
+  const fetchModels = async () => {
+    setLoadingModels(true);
+    try {
+      const existing = editing && editing !== "new" ? editing : null;
+      const result = existing && !form.api_key
+        ? await api.fetchSavedProviderModels(existing.id)
+        : await api.fetchProviderModels({ base_url: form.base_url, api_key: form.api_key, headers_text: form.headers_text });
+      setRemoteModels(result.models);
+      setNotice({ type: "success", message: `已从渠道获取 ${result.models.length} 个模型，请点击保存` });
+    } catch (error) { setNotice({ type: "error", message: error instanceof Error ? error.message : "获取模型列表失败" }); }
+    finally { setLoadingModels(false); }
   };
 
   const closeEditor = () => {
@@ -180,7 +197,7 @@ export function ProvidersPage({
     setSaving(true);
     try {
       const headers = JSON.parse(form.headers_text || "{}");
-      const payload = { ...form, headers, headers_text: undefined };
+      const payload = { ...form, headers, headers_text: undefined, available_models: remoteModels };
       if (editing === "new") await api.createProvider(payload);
       else if (editing) await api.updateProvider(editing.id, payload);
       closeEditor();
@@ -585,7 +602,7 @@ export function ProvidersPage({
             <label>中转名称<input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="例如：主线路" /></label>
             <div className="form-grid three-columns">
               <label>Base URL<input required value={form.base_url} onChange={(event) => setForm({ ...form, base_url: event.target.value })} placeholder="https://example.com/v1" /></label>
-              <label>测试模型（固定流式检测）<select required value={form.test_model} onChange={(event) => setForm({ ...form, test_model: event.target.value })}>{testModels.map((model) => <option key={model} value={model}>{model}</option>)}</select></label>
+              <label>测试模型（固定流式检测）<div className="inline-control"><select required value={form.test_model} onChange={(event) => setForm({ ...form, test_model: event.target.value })}>{testModels.map((model) => <option key={model} value={model}>{model}</option>)}</select><button className="button button-secondary button-small" type="button" onClick={() => void fetchModels()} disabled={loadingModels}>{loadingModels ? "获取中" : "获取模型"}</button></div></label>
               <label>测评倍率<input type="number" min="0" step="0.01" required value={form.cost_multiplier} onChange={(event) => setForm({ ...form, cost_multiplier: Number(event.target.value) })} /></label>
             </div>
             <div className="form-grid three-columns">

@@ -3,10 +3,20 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { applyCodexConfig, codexStatus } from "../server/codex-config.mjs";
+import { applyCodexConfig, codexStatus, setCodexModel } from "../server/codex-config.mjs";
 
 const PORT = 18080;
 const EXPECTED_URL = `http://127.0.0.1:${PORT}/v1`;
+
+test("switches the Codex model and creates a backup", () => {
+  withCodexHome(`model_provider = "local_router"\nmodel = "gpt-5.6-sol"\n\n[model_providers.local_router]\nbase_url = "${EXPECTED_URL}"\nwire_api = "responses"\n`, (path) => {
+    const result = setCodexModel(PORT, "deepseek-chat");
+    assert.equal(result.model, "deepseek-chat");
+    assert.ok(result.backup);
+    assert.match(readFileSync(path, "utf8"), /^model = "deepseek-chat"$/m);
+    assert.equal(codexStatus(PORT).model, "deepseek-chat");
+  });
+});
 
 test("initializes a new Codex config with a managed provider", () => {
   withCodexHome(null, (path) => {

@@ -1,0 +1,4 @@
+{
+  "build": { "beforeBuildCommand": "npm run build" },
+  "bundle": { "createUpdaterArtifacts": false }
+}
